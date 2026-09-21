@@ -60,12 +60,17 @@ def predict(x: Features, bg: BackgroundTasks) -> Prediction:
     t0 = time.perf_counter()
     request_id = str(uuid.uuid4())
     payload = x.model_dump()  # x.dict() in pydantic v1
-    frame = pd.DataFrame([payload]).reindex(columns=app.state.meta["features"])
 
-    proba = app.state.pipeline.predict_proba(frame["sequence"].tolist())[0]
-    pred_idx = proba.argmax()
-    antibiotic_class = app.state.meta["classes"][pred_idx]
-    score = float(proba[pred_idx])
+    try:
+        frame = pd.DataFrame([payload]).reindex(columns=app.state.meta["features"])
+        proba = app.state.pipeline.predict_proba(frame["sequence"].tolist())[0]
+        pred_idx = proba.argmax()
+        antibiotic_class = app.state.meta["classes"][pred_idx]
+        score = float(proba[pred_idx])
+    except Exception:
+        latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+        db.save_prediction(request_id, payload, None, app.state.version, latency_ms, 500)
+        raise HTTPException(status_code=500, detail="Prediction failed")
 
     latency_ms = round((time.perf_counter() - t0) * 1000, 2)
 
