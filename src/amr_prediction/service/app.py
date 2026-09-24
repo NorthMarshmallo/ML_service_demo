@@ -1,10 +1,10 @@
 import time
 import uuid
-
 from contextlib import asynccontextmanager
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+
 import joblib
 import pandas as pd
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from amr_prediction import db
@@ -67,10 +67,10 @@ def predict(x: Features, bg: BackgroundTasks) -> Prediction:
         pred_idx = proba.argmax()
         antibiotic_class = app.state.meta["classes"][pred_idx]
         score = float(proba[pred_idx])
-    except Exception:
+    except Exception as e:
         latency_ms = round((time.perf_counter() - t0) * 1000, 2)
         db.save_prediction(request_id, payload, None, app.state.version, latency_ms, 500)
-        raise HTTPException(status_code=500, detail="Prediction failed")
+        raise HTTPException(status_code=500, detail="Prediction failed") from e
 
     latency_ms = round((time.perf_counter() - t0) * 1000, 2)
 
