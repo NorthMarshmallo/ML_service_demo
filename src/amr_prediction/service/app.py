@@ -49,9 +49,9 @@ def health():
 
 @app.get("/ready")
 def ready():
-    if getattr(app.state, "pipeline", "None") is  None:
+    if getattr(app.state, "pipeline", None) is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
-    
+
     return {"status": "ready"}
 
 
