@@ -21,6 +21,7 @@ dev = [
     "httpx",
     "locust",
     "ruff",
+    "httpx2>=2.13.1",
 ]
 
 [build-system]
@@ -33,6 +34,9 @@ module-name = "amr_prediction"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = ["integration: нужна база данных - адрес в DATABASE_URL"]
+filterwarnings = [
+    "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",
+]
 
 [tool.ruff]
 line-length = 150

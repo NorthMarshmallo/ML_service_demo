@@ -8,11 +8,10 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 from amr_prediction import db
 from amr_prediction.config import settings
-
-from starlette.background import BackgroundTask
 
 
 class Features(BaseModel):
