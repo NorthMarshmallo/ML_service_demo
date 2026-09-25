@@ -2,10 +2,12 @@ import time
 import uuid
 
 from contextlib import asynccontextmanager
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 import joblib
 import pandas as pd
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from amr_prediction import db
 from amr_prediction.config import settings
@@ -14,7 +16,8 @@ from amr_prediction.config import settings
 class Features(BaseModel):
     model_config = {"extra": "forbid"}
 
-    sequence: str
+    # только 20 стандартных аминокислот и длина >= 20
+    sequence: str = Field(pattern=r"^[ACDEFGHIKLMNPQRSTVWY]+$", min_length=20)
 
 
 class Prediction(BaseModel):
@@ -40,6 +43,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="amr_prediction-service", version="1.0", lifespan=lifespan)
+
+
+@app.exception_handler(RequestValidationError)
+async def log_validation_error(request: Request, exc: RequestValidationError):
+    db.save_prediction(str(uuid.uuid4()), exc.body, None, app.state.version, None, 422)
+    return await request_validation_exception_handler(request, exc)
 
 
 @app.get("/health")
