@@ -1,13 +1,14 @@
 import time
 import uuid
-
 from contextlib import asynccontextmanager
+
+import joblib
+import pandas as pd
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
-import joblib
-import pandas as pd
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 from amr_prediction import db
 from amr_prediction.config import settings
@@ -21,7 +22,7 @@ class Features(BaseModel):
 
 
 class Prediction(BaseModel):
-    #model_config = {"protected_namespaces": ()}
+    # model_config = {"protected_namespaces": ()}
 
     score: float
     antibiotic_class: str
@@ -47,8 +48,11 @@ app = FastAPI(title="amr_prediction-service", version="1.0", lifespan=lifespan)
 
 @app.exception_handler(RequestValidationError)
 async def log_validation_error(request: Request, exc: RequestValidationError):
-    db.save_prediction(str(uuid.uuid4()), exc.body, None, app.state.version, None, 422)
-    return await request_validation_exception_handler(request, exc)
+    request_id = str(uuid.uuid4())
+    response = await request_validation_exception_handler(request, exc)
+    response.headers["X-Request-ID"] = request_id
+    response.background = BackgroundTask(db.save_prediction, request_id, exc.body, None, app.state.version, None, 422)
+    return response
 
 
 @app.get("/health")
@@ -76,10 +80,10 @@ def predict(x: Features, bg: BackgroundTasks) -> Prediction:
         pred_idx = proba.argmax()
         antibiotic_class = app.state.meta["classes"][pred_idx]
         score = float(proba[pred_idx])
-    except Exception:
+    except Exception as e:
         latency_ms = round((time.perf_counter() - t0) * 1000, 2)
         db.save_prediction(request_id, payload, None, app.state.version, latency_ms, 500)
-        raise HTTPException(status_code=500, detail="Prediction failed")
+        raise HTTPException(status_code=500, detail="Prediction failed") from e
 
     latency_ms = round((time.perf_counter() - t0) * 1000, 2)
 
