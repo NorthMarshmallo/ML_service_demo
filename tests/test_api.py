@@ -1,3 +1,6 @@
+import pytest
+
+
 def test_health(client):
     r = client.get("/health")
     assert r.status_code == 200
@@ -8,8 +11,9 @@ def test_ready(client):
     assert client.get("/ready").status_code == 200
 
 
-def test_bad_tenure_is_422(client, good_row):
-    r = client.post("/v1/predict", json={**good_row, "tenure": -1})
+@pytest.mark.parametrize("sequence", ["", "hello", "ACDEF", "ACDEFGHIKLMNPQRSTVWYX"])
+def test_bad_sequence_is_422(client, sequence):
+    r = client.post("/v1/predict", json={"sequence": sequence})
     assert r.status_code == 422
 
 

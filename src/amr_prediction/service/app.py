@@ -4,8 +4,10 @@ from contextlib import asynccontextmanager
 
 import joblib
 import pandas as pd
-from fastapi import BackgroundTasks, FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from pydantic import BaseModel, Field
 
 from amr_prediction import db
 from amr_prediction.config import settings
@@ -14,11 +16,12 @@ from amr_prediction.config import settings
 class Features(BaseModel):
     model_config = {"extra": "forbid"}
 
-    sequence: str
+    # только 20 стандартных аминокислот и длина >= 20
+    sequence: str = Field(pattern=r"^[ACDEFGHIKLMNPQRSTVWY]+$", min_length=20)
 
 
 class Prediction(BaseModel):
-    #model_config = {"protected_namespaces": ()}
+    # model_config = {"protected_namespaces": ()}
 
     score: float
     antibiotic_class: str
@@ -42,6 +45,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="amr_prediction-service", version="1.0", lifespan=lifespan)
 
 
+@app.exception_handler(RequestValidationError)
+async def log_validation_error(request: Request, exc: RequestValidationError):
+    db.save_prediction(str(uuid.uuid4()), exc.body, None, app.state.version, None, 422)
+    return await request_validation_exception_handler(request, exc)
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "model_version": getattr(app.state, "version", "unknown")}
@@ -49,9 +58,9 @@ def health():
 
 @app.get("/ready")
 def ready():
-    if getattr(app.state, "pipeline", "None") is  None:
+    if getattr(app.state, "pipeline", None) is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
-    
+
     return {"status": "ready"}
 
 

@@ -8,7 +8,7 @@ def test_predict_smoke(client, good_row):
     assert body["model_version"]
 
 
-def test_batch_and_single_agree(client, good_row):
+def test_predict_is_deterministic(client, good_row):
     s1 = client.post("/v1/predict", json=good_row).json()["score"]
     s2 = client.post("/v1/predict", json=good_row).json()["score"]
     assert abs(s1 - s2) < 1e-12
