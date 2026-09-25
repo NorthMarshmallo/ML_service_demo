@@ -12,6 +12,8 @@ from pydantic import BaseModel, Field
 from amr_prediction import db
 from amr_prediction.config import settings
 
+from starlette.background import BackgroundTask
+
 
 class Features(BaseModel):
     model_config = {"extra": "forbid"}
@@ -47,8 +49,11 @@ app = FastAPI(title="amr_prediction-service", version="1.0", lifespan=lifespan)
 
 @app.exception_handler(RequestValidationError)
 async def log_validation_error(request: Request, exc: RequestValidationError):
-    db.save_prediction(str(uuid.uuid4()), exc.body, None, app.state.version, None, 422)
-    return await request_validation_exception_handler(request, exc)
+    request_id = str(uuid.uuid4())
+    response = await request_validation_exception_handler(request, exc)
+    response.headers["X-Request-ID"] = request_id
+    response.background = BackgroundTask(db.save_prediction, request_id, exc.body, None, app.state.version, None, 422)
+    return response
 
 
 @app.get("/health")
