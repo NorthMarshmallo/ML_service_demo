@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 import joblib
 import pandas as pd
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from amr_prediction import db
 from amr_prediction.config import settings
@@ -14,7 +14,8 @@ from amr_prediction.config import settings
 class Features(BaseModel):
     model_config = {"extra": "forbid"}
 
-    sequence: str
+    # только 20 стандартных аминокислот и длина >= 20
+    sequence: str = Field(pattern=r"^[ACDEFGHIKLMNPQRSTVWY]+$", min_length=20)
 
 
 class Prediction(BaseModel):
