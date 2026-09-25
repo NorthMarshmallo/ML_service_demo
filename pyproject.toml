@@ -1,6 +1,6 @@
 [project]
 name = "amr_prediction-service"
-version = "0.1.1"
+version = "0.1.2"
 description = "Service for AMR prediction by AA sequence."
 requires-python=">=3.11,<3.13"
 
@@ -32,6 +32,7 @@ module-name = "amr_prediction"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["integration: нужна база данных - адрес в DATABASE_URL"]
 
 [tool.ruff]
 line-length = 150
