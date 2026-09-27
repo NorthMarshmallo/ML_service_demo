@@ -69,6 +69,7 @@ jobs:
         env:
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         run: |
+          [ -n "$DB_PASSWORD" ] || { echo "secret DB_PASSWORD is empty/not set"; exit 1; }
           kubectl create secret generic amr-prediction-secrets \
           --from-literal=POSTGRES_PASSWORD="$DB_PASSWORD" \
           --from-literal=DATABASE_URL="postgresql://postgres:$DB_PASSWORD@postgres:5432/amr_prediction"
@@ -101,3 +102,4 @@ jobs:
           kubectl describe deploy/amr-prediction-service | tail -20
           kubectl get events --sort-by=.lastTimestamp | tail -20
           kubectl logs deploy/amr-prediction-service --previous --tail=30 || true
+          kubectl logs deploy/postgres --previous --tail=30 || kubectl logs deploy/postgres --tail=30 || true
