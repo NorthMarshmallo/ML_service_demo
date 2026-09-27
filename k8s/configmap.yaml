@@ -4,4 +4,4 @@ metadata:
   name: amr-prediction-config
 data:
   LOG_LEVEL: "INFO"
-  MODEL_PATH: artifact/model.joblib
+  MODEL_PATH: artifact/amr_prediction_bundle.joblib
