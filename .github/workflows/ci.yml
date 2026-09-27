@@ -86,7 +86,9 @@ jobs:
         run: |
           kubectl port-forward svc/amr-prediction-service 8080:80 &
           sleep 5
-          curl --fail -s localhost:8080/health; echo
+          expected=$(kubectl get configmap amr-prediction-config -o jsonpath='{.data.MODEL_PATH}')
+          curl --fail -s localhost:8080/health \
+            | python3 -c "import json,sys; r=json.load(sys.stdin); print(r); assert r['model_path'] == sys.argv[1], r" "$expected"
           curl --fail -s -X POST localhost:8080/v1/predict \
             -H "Content-Type: application/json" -d @good.json; echo
           sleep 2
