@@ -103,3 +103,4 @@ jobs:
           kubectl get events --sort-by=.lastTimestamp | tail -20
           kubectl logs deploy/amr-prediction-service --previous --tail=30 || true
           kubectl logs deploy/postgres --previous --tail=30 || kubectl logs deploy/postgres --tail=30 || true
+          kubectl describe nodes | grep -A 10 "Allocated resources" || true
