@@ -103,7 +103,7 @@ jobs:
           curl --fail -sS --retry 5 --retry-all-errors -H "$H" $U/health | tee health.json; echo
           grep -q '"model_version":"amr_prediction-v' health.json
 
-          curl --fail -s -X POST -H "$H" $U/v1/predict \
+          curl --fail -sS --retry 5 --retry-all-errors -X POST -H "$H" $U/v1/predict \
             -H "Content-Type: application/json" -d @good.json | tee pred.json; echo
           jq -e '.antibiotic_class == "aminoglycoside" and .score > 0.5' pred.json
           sleep 2
