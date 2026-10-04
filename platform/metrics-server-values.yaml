@@ -1,0 +1,3 @@
+# kind подписывает сертификаты kubelet сам, без флага metrics-server им не доверяет
+args:
+  - --kubelet-insecure-tls
