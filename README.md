@@ -121,6 +121,15 @@ kubectl apply -f platform/ingress.yaml
 
 MLflow: http://mlflow.localhost
 
+**Данные (DVC)**
+
+Датасет `datasets/dataset.csv` хранится в DVC, в git - только `datasets/dataset.csv.dvc`. Хранилище - папка `../dvc-storage` рядом с репозиторием.
+
+```bash
+uv run dvc pull                                  # скачать версию данных из текущего коммита
+git checkout <коммит> -- datasets/dataset.csv.dvc && uv run dvc checkout   # данные другой версии
+```
+
 **Обучение с регистрацией в MLflow**
 
 ```bash
@@ -135,6 +144,7 @@ MLFLOW_TRACKING_URI=http://mlflow.localhost uv run python -m amr_prediction.trai
 src/amr_prediction/   код сервиса (API, настройки, работа с БД) и обучения
 artifact/             обученная модель
 experiments/          ноутбук обучения
+datasets/             датасет под DVC (в git только .dvc-файл)
 tests/                unit- и интеграционные тесты
 k8s/                  манифесты Kubernetes
 platform/             кластер kind, Traefik, MLflow, Ingress
@@ -150,6 +160,7 @@ platform/             кластер kind, Traefik, MLflow, Ingress
 - [x] Обучение с регистрацией в MLflow и гейтом champion/challenger
 - [x] Сервис загружает модель из реестра по алиасу champion
 - [x] Деплой по кнопке в свой кластер через self-hosted runner, smoke через Ingress
+- [x] Версии данных в DVC, `data_md5` в прогоне MLflow
 
 ## История изменений
 

@@ -28,6 +28,7 @@ Run workflow: tests → build → deploy на [self-hosted, kind]: образ в
 | Сервис берёт модель из реестра по алиасу, откат модели без пересборки образа | [откат модели](#откат-модели) |
 | CI/CD в свой кластер: runner в сети kind, Secret через `apply`, smoke через Ingress | [зелёный прогон](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/37231251038), [деплой в свой кластер](#деплой-в-свой-кластер) |
 | Деплой по кнопке (`workflow_dispatch`) | [деплой по кнопке](#деплой-по-кнопке) |
+| Версии данных в DVC, обучение на двух версиях | [версии данных](#версии-данных-в-dvc) |
 | Красные прогоны деплоя: диагноз по логу и починка | [инциденты 2-6](#инциденты) |
 
 #### Поды и Ingress
@@ -46,6 +47,7 @@ Run workflow: tests → build → deploy на [self-hosted, kind]: образ в
 | 2 | 16 | 0.0088 | только challenger: второй слой из 2 нейронов, модель выродилась |
 | 3 | 32 | 0.8847 | только challenger: хуже champion |
 | 4 | 256 | 0.9535 | champion: лучше на 0.028 при `MIN_GAIN` 0.005 |
+| 5 | 256 | 0.9533 | только challenger: данные v2, на 0.0002 хуже champion |
 
 ![train-runs-1](docs/screenshots/train-runs-1.png)
 
@@ -92,8 +94,71 @@ Runner в настройках репозитория:
 - [push в main](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/37224678012): `tests` и `build` прошли, образ в ghcr, `deploy` пропущен.
 - [Run workflow](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/37225027125): тот же коммит, `deploy` запущен кнопкой (красный, см. [инцидент 2](#2-runner-не-видит-кластер)).
 
+#### Версии данных в DVC
+
+Датасет `datasets/dataset.csv` под DVC, в git только [`datasets/dataset.csv.dvc`](datasets/dataset.csv.dvc) с md5 и размером, сам CSV в `datasets/.gitignore`. Хранилище - папка `../dvc-storage` рядом с репозиторием.
+
+| Версия данных | Строк | md5 | Что изменено |
+|---|---|---|---|
+| v1 | 17 000 | `96bb46abc7208090df46a3b35fc10687` | исходный датасет |
+| v2 | 16 972 | `fbb751c61c3de006a7ffe188e3d84ddb` | убраны 20 полных дублей и 8 строк четырёх последовательностей, у которых в датасете два разных класса |
+
+`dvc push` после каждой версии:
+
+```
+$ cat datasets/dataset.csv.dvc          # v1
+outs:
+- md5: 96bb46abc7208090df46a3b35fc10687
+  size: 6011677
+  hash: md5
+  path: dataset.csv
+$ uv run dvc push
+1 file pushed
+```
+
+```
+$ uv run dvc push                       # v2
+1 file pushed
+$ uv run dvc diff HEAD~1
+Modified:
+    datasets/dataset.csv
+
+files summary: 1 modified
+```
+
+Откат к v1 и обратно: `wc -l` с заголовком.
+
+```
+$ git checkout HEAD~1 -- datasets/dataset.csv.dvc && uv run dvc checkout
+M       datasets/dataset.csv
+17001 datasets/dataset.csv
+$ git checkout HEAD -- datasets/dataset.csv.dvc && uv run dvc checkout
+M       datasets/dataset.csv
+16973 datasets/dataset.csv
+```
+
+Чистый клон в соседней папке:
+
+```
+$ git clone -b feat/dvc-data ~/ML_Service_course ~/amr-dvc-check && cd ~/amr-dvc-check
+$ uv run dvc pull
+A       datasets/dataset.csv
+1 file fetched and 1 file added
+$ wc -l datasets/dataset.csv
+16973 datasets/dataset.csv
+```
+
+Обучение на двух версиях: версии модели 1-4 обучены на v1 (`data_md5` `96bb46ab...`), версия 5 - на v2 (`data_md5` `fbb751c6...`). Гейт версию 5 не пропустил: macro F1 0.9533 против 0.9535 у champion, удаление 28 строк из 17 000 качество не изменило.
+
+![train-data-v2](docs/screenshots/train-data-v2.png)
+
+Сравнение прогонов версий 4 и 5 в MLflow: разные `data_md5` и `macro_f1`.
+
+![data-md5-compare](docs/screenshots/data-md5-compare.png)
+
 ### Добавлено
 
+- Датасет под DVC, хранилище `../dvc-storage`; вторая версия данных без дублей и противоречивых меток - [`datasets/dataset.csv.dvc`](datasets/dataset.csv.dvc)
 - Кластер kind с пробросом `127.0.0.1:80` → NodePort 30080 - [`platform/kind-config.yaml`](platform/kind-config.yaml)
 - Traefik (чарт `traefik-41.6.0`) как Ingress-контроллер на NodePort 30080 - [`platform/traefik-values.yaml`](platform/traefik-values.yaml)
 - MLflow 3.16.1 в namespace `mlops`: SQLite и артефакты на PVC 2Gi - [`platform/mlflow.yaml`](platform/mlflow.yaml)
