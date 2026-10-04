@@ -5,6 +5,7 @@
 Новая версия всегда получает алиас challenger. Алиас champion она получает, только если
 macro F1 на отложенной выборке лучше, чем у текущего champion (или champion ещё нет).
 """
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,7 +17,7 @@ import sklearn
 from mlflow import MlflowClient
 from mlflow.exceptions import MlflowException
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import ConfusionMatrixDisplay, accuracy_score, f1_score
 from sklearn.model_selection import train_test_split
 from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import Pipeline
@@ -25,7 +26,7 @@ DATA_PATH = Path(os.getenv("DATA_PATH", "datasets/dataset.csv"))
 MODEL_NAME = os.getenv("MODEL_NAME", "amr_prediction")
 EXPERIMENT = os.getenv("MLFLOW_EXPERIMENT", "amr_prediction")
 HIDDEN_DIM = int(os.getenv("HIDDEN_DIM", "256"))
-MIN_GAIN = float(os.getenv("GATE_MIN_GAIN", "0.0"))
+MIN_GAIN = float(os.getenv("GATE_MIN_GAIN", "0.005"))
 SEED = 42
 NUM_EPOCHS = 20
 SKOPS_TRUSTED = ["sklearn.neural_network._stochastic_optimizers.AdamOptimizer"]
@@ -112,9 +113,15 @@ def main() -> dict:
         metadata = {"features": FEATURES, "classes": list(pipeline.classes_), "n_train": len(x_train),
                     "data_rows": len(df), "sklearn": sklearn.__version__}
         mlflow.log_params({"hidden_dim": HIDDEN_DIM, "epochs": NUM_EPOCHS, "model": "MLPClassifier", "seed": SEED,
-                           "data": str(DATA_PATH)})
+                           "data": str(DATA_PATH), "data_md5": hashlib.md5(DATA_PATH.read_bytes()).hexdigest()})
         mlflow.log_metrics({"macro_f1": f1, "accuracy": float(accuracy_score(y_test, y_pred)), **dropped})
         mlflow.log_dict(metadata, "metadata.json")
+        disp = ConfusionMatrixDisplay.from_predictions(y_test, y_pred, labels=CLASSES, xticks_rotation=45, colorbar=False)
+        for label in disp.ax_.get_xticklabels():
+            label.set(ha="right", rotation_mode="anchor")
+        disp.figure_.set_size_inches(9, 8)
+        disp.figure_.tight_layout()
+        mlflow.log_figure(disp.figure_, "confusion_matrix.png")
         info = mlflow.sklearn.log_model(pipeline, name="model", registered_model_name=MODEL_NAME,
                                         skops_trusted_types=SKOPS_TRUSTED)
         version = info.registered_model_version
