@@ -25,6 +25,7 @@ dev = [
     "ruff",
     "httpx2>=2.13.1",
     "matplotlib>=3.11.2",
+    "dvc>=3.67.1",
 ]
 
 [build-system]
