@@ -34,7 +34,7 @@ curl -X POST localhost:8000/v1/predict -H "Content-Type: application/json" -d @g
 
 Метрики на test (3 032 последовательности): **macro F1 0.953**, accuracy 0.97. Слабее всего `multidrug` (F1 0.89).
 
-Реестр: каждое обучение регистрирует версию модели `amr_prediction` с алиасом `challenger`; алиас `champion` она получает, если macro F1 выше, чем у текущего champion, хотя бы на 0.005. Сервис пока загружает бандл из `artifact/`.
+Реестр: каждое обучение регистрирует версию модели `amr_prediction` с алиасом `challenger`; алиас `champion` она получает, если macro F1 выше, чем у текущего champion, хотя бы на 0.005. Сервис при старте загружает `amr_prediction@champion` из реестра, если задан `MODEL_NAME`, а без него - бандл из `artifact/`, чтобы тесты и CI работали без MLflow. Загруженная версия видна в `/health`: `amr_prediction-v4` из реестра, `1.1.0` из файла.
 
 Ограничения: модель всегда отвечает одним из 7 классов, даже если белок не связан с устойчивостью к ним; признаки - только частоты аминокислот, порядок в последовательности не учитывается.
 
@@ -60,6 +60,9 @@ main:  tests → build (образ в ghcr, тег sha-<коммит>) → deplo
 |---|---|---|
 | `MODEL_PATH` | ConfigMap `amr-prediction-config` | `artifact/amr_prediction_bundle.joblib` |
 | `LOG_LEVEL` | ConfigMap `amr-prediction-config` | `INFO` |
+| `MODEL_NAME` | пока не задан | нет - модель из файла `MODEL_PATH` |
+| `MODEL_ALIAS` | пока не задан | `champion` |
+| `MLFLOW_TRACKING_URI` | пока не задан | `http://mlflow.mlops:5000` |
 | `DATABASE_URL` | Secret `amr-prediction-secrets` | нет - предсказания не логируются |
 
 ## Запуск
@@ -142,6 +145,7 @@ platform/             кластер kind, Traefik, MLflow, Ingress
 - [x] CI/CD: тесты, образ в ghcr, деплой в kind
 - [x] Платформа в kind: Traefik, MLflow за Ingress
 - [x] Обучение с регистрацией в MLflow и гейтом champion/challenger
+- [x] Сервис загружает модель из реестра по алиасу champion
 
 ## История изменений
 

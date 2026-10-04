@@ -1,0 +1,14 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: amr-prediction-service
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: amr.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: amr-prediction-service, port: {number: 80}}

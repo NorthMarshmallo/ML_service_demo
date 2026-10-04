@@ -2,7 +2,6 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 
-import joblib
 import pandas as pd
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.exception_handlers import request_validation_exception_handler
@@ -12,6 +11,7 @@ from starlette.background import BackgroundTask
 
 from amr_prediction import db
 from amr_prediction.config import settings
+from amr_prediction.model_store import load_model
 
 
 class Features(BaseModel):
@@ -33,10 +33,7 @@ class Prediction(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    bundle = joblib.load(settings.model_path)
-    app.state.pipeline = bundle["pipeline"]
-    app.state.meta = bundle["metadata"]
-    app.state.version = bundle["metadata"]["version"]
+    app.state.pipeline, app.state.meta, app.state.version = load_model()
 
     db.init()
     yield

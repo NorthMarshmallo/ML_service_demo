@@ -18,6 +18,7 @@
 |---|---|
 | Платформа: kind с входом на :80, Traefik, MLflow на `mlflow.localhost` | [поды и Ingress](#поды-и-ingress), [UI MLflow](#mlflow-ui) |
 | Обучение с регистрацией в MLflow и гейтом champion/challenger | [прогоны гейта](#прогоны-гейта), [реестр](#реестр-версии-и-алиасы), [прогон](#прогон-артефакт-и-параметры) |
+| Сервис берёт модель из реестра по алиасу, откат модели без пересборки образа | [откат модели](#откат-модели) |
 
 #### Поды и Ingress
 
@@ -52,6 +53,12 @@
 
 ![run-overview](docs/screenshots/run-overview.png)
 
+#### Откат модели
+
+`/health` до и после того, как `champion` перевешен на прошлую версию и поды перезапущены.
+
+![model-rollback](docs/screenshots/model-rollback.png)
+
 ### Добавлено
 
 - Кластер kind с пробросом `127.0.0.1:80` → NodePort 30080 - [`platform/kind-config.yaml`](platform/kind-config.yaml)
@@ -61,6 +68,8 @@
 - Обучение с регистрацией в MLflow и гейтом по macro F1 (`MIN_GAIN` 0.005) - [`src/amr_prediction/train.py`](src/amr_prediction/train.py)
 - Классы модели - фиксированный список `CLASSES` вместо «7 самых частых» при каждом обучении; обучение останавливается, если в классе меньше 100 примеров; число отброшенных строк по каждому фильтру пишется в метрики прогона
 - В прогоне: матрица ошибок `confusion_matrix.png`, `metadata.json` с признаками и классами, параметр `data_md5`
+- Сервис загружает `MODEL_NAME@MODEL_ALIAS` из реестра, без `MODEL_NAME` - бандл из файла; в `/health` версия из реестра - [`src/amr_prediction/model_store.py`](src/amr_prediction/model_store.py)
+- Ingress `amr.localhost` → Service `amr-prediction-service:80` рядом с остальными манифестами сервиса - [`k8s/ingress.yaml`](k8s/ingress.yaml)
 
 ### Изменено
 
