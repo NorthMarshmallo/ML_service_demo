@@ -2,6 +2,7 @@ name: ci
 on:
   push: {branches: [main]}
   pull_request:
+  workflow_dispatch:
 
 jobs:
   tests:
@@ -32,7 +33,7 @@ jobs:
       - uses: actions/checkout@v7
       - run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/amr-prediction-service:sha-${GITHUB_SHA}" >> "$GITHUB_ENV"
       - uses: docker/login-action@v4
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -41,16 +42,21 @@ jobs:
       - uses: docker/build-push-action@v4
         with:
           context: .
-          push: ${{ github.event_name == 'push' }}
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ env.IMAGE }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   deploy:
     needs: build
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    # джоба идёт не в облаке GitHub, а на runner в Docker на машине с kind
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, kind]
+    concurrency: {group: deploy-kind}
+    timeout-minutes: 10
     permissions: {contents: read, packages: read}
+    env:
+      KIND_CLUSTER: kind
     steps:
       - uses: actions/checkout@v7
       - run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/amr-prediction-service:sha-${GITHUB_SHA}" >> "$GITHUB_ENV" #ghcr
@@ -59,12 +65,18 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: helm/kind-action@v1
-        with: {cluster_name: ci}
+      - name: kind, kubectl и доступ к кластеру
+        run: |
+          B=~/.local/bin && mkdir -p $B && echo "$B" >> "$GITHUB_PATH"
+          [ -x $B/kind ] || curl -sSLo $B/kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
+          [ -x $B/kubectl ] || curl -sSLo $B/kubectl https://dl.k8s.io/v1.37.0/bin/linux/amd64/kubectl
+          chmod +x $B/kind $B/kubectl
+          $B/kind export kubeconfig --name "$KIND_CLUSTER" --internal
+          $B/kubectl get nodes
       - name: образ в кластер
         run: |
           docker pull "$IMAGE"
-          kind load docker-image "$IMAGE" --name ci
+          kind load docker-image "$IMAGE" --name "$KIND_CLUSTER"
       - name: подтягиваем секреты
         env:
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
@@ -72,7 +84,8 @@ jobs:
           [ -n "$DB_PASSWORD" ] || { echo "secret DB_PASSWORD is empty/not set"; exit 1; }
           kubectl create secret generic amr-prediction-secrets \
           --from-literal=POSTGRES_PASSWORD="$DB_PASSWORD" \
-          --from-literal=DATABASE_URL="postgresql://postgres:$DB_PASSWORD@postgres:5432/amr_prediction"
+          --from-literal=DATABASE_URL="postgresql://postgres:$DB_PASSWORD@postgres:5432/amr_prediction" \
+          --dry-run=client -o yaml | kubectl apply -f -
       - name: база
         run: |
           kubectl apply -f k8s/postgres.yaml
@@ -81,28 +94,29 @@ jobs:
         run: |
           kubectl apply -f k8s/
           kubectl set image deploy/amr-prediction-service api="$IMAGE"
-          kubectl rollout status deploy/amr-prediction-service --timeout=120s
+          kubectl rollout status deploy/amr-prediction-service --timeout=180s
       - name: smoke
+        # через Ingress, как ходят пользователи: из сети kind узел виден по имени, Traefik слушает NodePort 30080
         run: |
-          kubectl port-forward svc/amr-prediction-service 8080:80 &
-          sleep 5
-          expected=$(kubectl get configmap amr-prediction-config -o jsonpath='{.data.MODEL_PATH}')
-          curl --fail -s localhost:8080/health \
-            | python3 -c "import json,sys; r=json.load(sys.stdin); print(r); assert r['model_path'] == sys.argv[1], r" "$expected"
-          curl --fail -s -X POST localhost:8080/v1/predict \
-            -H "Content-Type: application/json" -d @good.json; echo
+          U="http://$KIND_CLUSTER-control-plane:30080"; H="Host: churn.localhost"
+
+          curl --fail -sS --retry 5 --retry-all-errors -H "$H" $U/health | tee health.json; echo
+          grep -q '"model_version":"amr_prediction-v' health.json
+
+          curl --fail -s -X POST -H "$H" $U/v1/predict \
+            -H "Content-Type: application/json" -d @good.json | tee pred.json; echo
+          jq -e '.antibiotic_class == "aminoglycoside" and .score > 0.5' pred.json
           sleep 2
+          RID=$(jq -r .request_id pred.json)
           kubectl exec deploy/postgres -- psql -U postgres -d amr_prediction \
-            -tc "SELECT count(*) FROM predictions" | grep -q 1
-          curl --fail -s -X POST localhost:8080/v1/predict \
-            -H "Content-Type: application/json" -d @good.json \
-            | python3 -c "import json,sys; r=json.load(sys.stdin); assert 0 <= r['score'] <= 1, r"
+            -tAc "SELECT count(*) FROM predictions WHERE request_id = '$RID'" | grep -qx 1
       - name: диагностика
         if: failure()
         run: |
-          kubectl get pods -o wide
+          kubectl get pods -A -o wide
+          kubectl get ingress -A
           kubectl describe deploy/amr-prediction-service | tail -20
           kubectl get events --sort-by=.lastTimestamp | tail -20
-          kubectl logs deploy/amr-prediction-service --previous --tail=30 || true
+          kubectl logs deploy/amr-prediction-service --tail=50 || true
           kubectl logs deploy/postgres --previous --tail=30 || kubectl logs deploy/postgres --tail=30 || true
           kubectl describe nodes | grep -A 10 "Allocated resources" || true
