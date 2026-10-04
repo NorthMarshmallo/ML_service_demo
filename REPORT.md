@@ -12,6 +12,13 @@
 
 Обучение [`train.py`](src/amr_prediction/train.py) регистрирует каждую модель в MLflow. Новая версия получает алиас `challenger`, `champion` - только если гейт пропустил.
 
+Деплой идёт в этот же кластер. Job `deploy` выполняет self-hosted runner `mlops-kind`: контейнер в Docker-сети `kind`, поэтому узел кластера ему виден по имени `mlops-control-plane`. Запускается только кнопкой Run workflow:
+
+```
+push в main:  tests → build (образ в ghcr), deploy пропущен
+Run workflow: tests → build → deploy на [self-hosted, kind]: образ в узел, Secret, манифесты, smoke через Ingress
+```
+
 ### Приёмка
 
 | Изменение | Подтверждение |
@@ -19,6 +26,9 @@
 | Платформа: kind с входом на :80, Traefik, MLflow на `mlflow.localhost` | [поды и Ingress](#поды-и-ingress), [UI MLflow](#mlflow-ui) |
 | Обучение с регистрацией в MLflow и гейтом champion/challenger | [прогоны гейта](#прогоны-гейта), [реестр](#реестр-версии-и-алиасы), [прогон](#прогон-артефакт-и-параметры) |
 | Сервис берёт модель из реестра по алиасу, откат модели без пересборки образа | [откат модели](#откат-модели) |
+| CI/CD в свой кластер: runner в сети kind, Secret через `apply`, smoke через Ingress | [зелёный прогон](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/37231251038), [деплой в свой кластер](#деплой-в-свой-кластер) |
+| Деплой по кнопке (`workflow_dispatch`) | [деплой по кнопке](#деплой-по-кнопке) |
+| Красные прогоны деплоя: диагноз по логу и починка | [инциденты 2-6](#инциденты) |
 
 #### Поды и Ingress
 
@@ -55,9 +65,32 @@
 
 #### Откат модели
 
-`/health` до и после того, как `champion` перевешен на прошлую версию и поды перезапущены.
+До отката сервис отдаёт версию 4:
+
+![model-rollback-before](docs/screenshots/model-rollback-before.png)
+
+В UI MLflow `champion` перевешен на версию 1, сразу после клика `kubectl rollout restart`, затем `/health` опрашивается раз в секунду до первого ответа `amr_prediction-v1`. От клика до ответа старой версии - 36 с, образ не пересобирался.
 
 ![model-rollback](docs/screenshots/model-rollback.png)
+
+Ждать нужно именно ответа, а не конца `rollout status`. В первой попытке `curl` сразу после `successfully rolled out` вернул `amr_prediction-v4`, а через секунду уже `v1`: старый под ещё завершался, и Traefik успел отправить запрос ему. Та же гонка уронила smoke, см. [инцидент 5](#5-smoke-запрос-попал-в-завершающийся-под).
+
+#### Деплой в свой кластер
+
+[Зелёный прогон](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/37231251038), в логе job `deploy` на шаге `Set up job`: `Runner name: 'mlops-kind'`. Smoke проверяет три вещи через Ingress (`Host: amr.localhost` на `mlops-control-plane:30080`):
+
+- в `/health` версия из реестра: `"model_version":"amr_prediction-v4"`;
+- ответ на `good.json` осмысленный: класс `aminoglycoside` с `score` > 0.5 (v4 даёт 0.999, v1 - 0.854);
+- в `predictions` ровно одна строка с `request_id` из этого ответа.
+
+Runner в настройках репозитория:
+
+![runners](docs/screenshots/runners.png)
+
+#### Деплой по кнопке
+
+- [push в main](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/37224678012): `tests` и `build` прошли, образ в ghcr, `deploy` пропущен.
+- [Run workflow](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/37225027125): тот же коммит, `deploy` запущен кнопкой (красный, см. [инцидент 2](#2-runner-не-видит-кластер)).
 
 ### Добавлено
 
@@ -70,10 +103,19 @@
 - В прогоне: матрица ошибок `confusion_matrix.png`, `metadata.json` с признаками и классами, параметр `data_md5`
 - Сервис загружает `MODEL_NAME@MODEL_ALIAS` из реестра, без `MODEL_NAME` - бандл из файла; в `/health` версия из реестра - [`src/amr_prediction/model_store.py`](src/amr_prediction/model_store.py)
 - Ingress `amr.localhost` → Service `amr-prediction-service:80` рядом с остальными манифестами сервиса - [`k8s/ingress.yaml`](k8s/ingress.yaml)
+- Job `deploy` на self-hosted runner `[self-hosted, kind]` в кластер `mlops` вместо временного кластера в облаке; запуск только через `workflow_dispatch`, `concurrency` не пускает два деплоя сразу - [PR #26](https://github.com/NorthMarshmallo/ML_service_demo/pull/26)
+- Secret через `--dry-run=client -o yaml | kubectl apply`: в постоянном кластере повторный `create secret` падал бы с `AlreadyExists` - [PR #26](https://github.com/NorthMarshmallo/ML_service_demo/pull/26)
+- Smoke через Ingress: версия из реестра в `/health`, класс и `score` на `good.json`, строка в базе ровно с этим `request_id` - [PR #26](https://github.com/NorthMarshmallo/ML_service_demo/pull/26)
+- ConfigMap: `MODEL_NAME`, `MODEL_ALIAS`, `MLFLOW_TRACKING_URI` - сервис в кластере берёт модель из реестра - [PR #26](https://github.com/NorthMarshmallo/ML_service_demo/pull/26), [PR #28](https://github.com/NorthMarshmallo/ML_service_demo/pull/28)
 
 ### Изменено
 
 - TF-IDF обучается на train до upsampling, как в ноутбуке: upsampling меняет только данные для модели, а не статистику признаков
+- `build` публикует образ при любом событии, кроме PR: на запуске по кнопке `deploy` тянет образ, собранный в том же прогоне - [PR #26](https://github.com/NorthMarshmallo/ML_service_demo/pull/26)
+
+### Исправлено
+
+- Smoke: POST `/v1/predict` с повторами и `-S`, ошибка `curl` видна в логе - [PR #30](https://github.com/NorthMarshmallo/ML_service_demo/pull/30)
 
 ### Инциденты
 
@@ -84,6 +126,49 @@
 - **Диагностика:** падает containerd внутри узла, а не чтение образа на ноутбуке. Локально образ только `amd64`, а Docker 29 хранит образы в containerd image store (`docker info`: `io.containerd.snapshotter.v1`).
 - **Причина:** образ мультиплатформенный, индекс ссылается на все платформы, а скачаны слои только `amd64`. kind импортирует с `--all-platforms` и не находит остальных.
 - **Исправление:** `kind load` пропущен, узел сам скачал образ из ghcr за 25,7 с. Обход: `docker save --platform linux/amd64` + `kind load image-archive`.
+
+#### 2. Runner не видит кластер
+
+- **Симптом:** [первый запуск deploy](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/37225027125): job красный на шаге `kind, kubectl и доступ к кластеру`, дальше ни один шаг не выполнился.
+- **Ошибка:** `ERROR: could not locate any control plane nodes for cluster named 'kind'. Use the --name option to select a different cluster`
+- **Диагностика:** `kind export kubeconfig` ищет Docker-контейнер `<имя кластера>-control-plane`, и в ошибке названо имя, под которым он искал, - `kind`. Это имя по умолчанию, а кластер с платформой создан как `mlops` (`kind get clusters`, контейнер `mlops-control-plane`). Имя берётся из `KIND_CLUSTER` в `ci.yml`.
+- **Причина:** `KIND_CLUSTER: kind` в `ci.yml`.
+- **Исправление:** `KIND_CLUSTER: mlops` - [PR #27](https://github.com/NorthMarshmallo/ML_service_demo/pull/27)
+- **Ссылки:** в [следующем прогоне](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/37226363958) шаг с кластером зелёный, прогон красный из-за инцидента 3
+
+#### 3. Модели нет в реестре
+
+- **Симптом:** [прогон](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/37226363958): job `deploy` красный на шаге `сервис`, новые поды в `CrashLoopBackOff`.
+- **Ошибка:** шаг `сервис`: `Waiting for deployment "amr-prediction-service" rollout to finish: 1 out of 2 new replicas have been updated...` → `error: timed out waiting for the condition`. В логе пода: `mlflow.exceptions.RestException: RESOURCE_DOES_NOT_EXIST: Registered Model with name=churn not found`, `ERROR: Application startup failed. Exiting.`
+- **Диагностика:** в events у нового пода `Container started`, затем `Startup probe failed: connection refused` и `Back-off restarting failed container api`: образ скачан, Secret найден, контейнер запускается и сам падает при старте. В traceback падение в `get_model_version_by_alias` из `model_store.py`: сервис спрашивает у реестра модель из `MODEL_NAME` и получает «не найдена». Поды в `ImagePullBackOff` с `amr_prediction-service:1.0` - это ReplicaSet до `kubectl set image`, к причине они не относятся.
+- **Причина:** `MODEL_NAME: churn` в `k8s/configmap.yaml`, а модель в реестре называется `amr_prediction`.
+- **Исправление:** `MODEL_NAME: amr_prediction` - [PR #28](https://github.com/NorthMarshmallo/ML_service_demo/pull/28)
+- **Ссылки:** в [следующем прогоне](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/37229714127) шаг `сервис` зелёный, поды `Running`, прогон красный из-за инцидента 4
+
+#### 4. Smoke: Ingress не находит хост
+
+- **Симптом:** [прогон](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/37229714127): job `deploy` красный на шаге `smoke`, хотя `rollout status` прошёл и поды `Running`.
+- **Ошибка:** шесть раз `curl: (22) The requested URL returned error: 404` - запрос и 5 повторов `--retry`.
+- **Диагностика:** в логе пода только пробы `GET /health` и `GET /ready` от kubelet, запроса smoke там нет. Значит, 404 вернул не сервис, а Traefik, который не нашёл маршрута. Traefik выбирает маршрут по заголовку `Host`: в диагностике `kubectl get ingress -A` у сервиса хост `amr.localhost`, а smoke шлёт `Host: churn.localhost`.
+- **Причина:** в шаге `smoke` в `ci.yml` хост `churn.localhost`, не совпадающий с `k8s/ingress.yaml`.
+- **Исправление:** `Host: amr.localhost` - [PR #29](https://github.com/NorthMarshmallo/ML_service_demo/pull/29)
+- **Ссылки:** в [следующем прогоне](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/37230172783) `/health` через Ingress ответил `amr_prediction-v4`, прогон красный из-за инцидента 5
+
+#### 5. Smoke: запрос попал в завершающийся под
+
+- **Симптом:** [прогон](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/37230172783) после починки инцидентов 2-4: шаг `smoke` красный, `/health` через Ingress ответил `amr_prediction-v4`, дальше пустая строка и `Error: Process completed with exit code 4`.
+- **Диагностика:** код 4 у `jq -e` значит пустой вход, то есть `pred.json` пустой и POST не удался. Ошибку `curl` не видно: у него был только `-s`, а `bash -e` без `pipefail` не замечает ошибку команды перед `| tee`. Тот же POST с ноутбука через `amr.localhost` вернул `200`, в логах новых подов POST из CI нет. В events старые поды прошлого прогона удалялись (`Killing ... Stopping container api`) в ту же секунду, что шёл smoke.
+- **Причина:** `rollout status` завершается, как только новые поды готовы, а старые ещё завершаются, и Traefik пару секунд держит их адреса в маршруте. `/health` прошёл за счёт `--retry`, POST без повторов попал в старый под.
+- **Исправление:** у POST `--retry 5 --retry-all-errors` и `-S`. Повтор безопасен: в базе проверяется `request_id` из ответа, который в итоге пришёл - [PR #30](https://github.com/NorthMarshmallo/ML_service_demo/pull/30)
+- **Ссылки:** [исправлено](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/37231251038)
+
+#### 6. Сеть: runner теряет связь с GitHub
+
+- **Симптом:** в [одном прогоне](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/37225399816) `deploy` упал на `docker/login-action`, ещё до шагов проекта; в [другом](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/37230794974) job повис на `Waiting for a runner`, а Cancel не срабатывал.
+- **Ошибка:** `Get "https://ghcr.io/v2/": context deadline exceeded`; в `docker logs gh-runner`: `TaskCanceledException`, затем `acquirejob failed. HTTP Status: Conflict` и `Skipping message Job. Job message already acquired`.
+- **Диагностика:** код workflow ни при чём: падает до первой команды проекта. В логе runner видно, что запрос на взятие job ушёл, ответ не дождался по таймауту, а повтор GitHub отклонил как уже взятый. GitHub считает job у runner, runner его не выполняет, поэтому отмена ждёт ответа, которого не будет. Запрос к api.github.com с машины в этот момент шёл 7 с вместо 0,3 с.
+- **Причина:** нестабильная сеть до GitHub на машине с runner.
+- **Исправление:** `docker restart gh-runner` (регистрация сохраняется: `config.sh` запускается только без файла `.runner`), GitHub закрыл зависший job как `cancelled`, [следующий запуск](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/37231251038) прошёл.
 
 ### Вопросы и решения
 

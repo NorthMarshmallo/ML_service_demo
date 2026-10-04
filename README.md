@@ -50,9 +50,12 @@ curl -X POST localhost:8000/v1/predict -H "Content-Type: application/json" -d @g
 [.github/workflows/ci.yml](.github/workflows/ci.yml):
 
 ```
-PR:    tests (ruff + pytest с Postgres) → build (образ собирается)
-main:  tests → build (образ в ghcr, тег sha-<коммит>) → deploy (kind, манифесты, smoke)
+PR:           tests (ruff + pytest с Postgres) → build (образ собирается)
+push в main:  tests → build (образ в ghcr, тег sha-<коммит>), deploy пропускается
+Run workflow: tests → build → deploy на self-hosted runner в кластер mlops (манифесты, smoke через Ingress)
 ```
+
+Deploy запускается вручную: Actions → ci → Run workflow → main. Runner - контейнер `gh-runner` в Docker-сети `kind` рядом с кластером, метки `[self-hosted, kind]`.
 
 ## Конфигурация
 
@@ -60,9 +63,9 @@ main:  tests → build (образ в ghcr, тег sha-<коммит>) → deplo
 |---|---|---|
 | `MODEL_PATH` | ConfigMap `amr-prediction-config` | `artifact/amr_prediction_bundle.joblib` |
 | `LOG_LEVEL` | ConfigMap `amr-prediction-config` | `INFO` |
-| `MODEL_NAME` | пока не задан | нет - модель из файла `MODEL_PATH` |
-| `MODEL_ALIAS` | пока не задан | `champion` |
-| `MLFLOW_TRACKING_URI` | пока не задан | `http://mlflow.mlops:5000` |
+| `MODEL_NAME` | ConfigMap: `amr_prediction` | нет - модель из файла `MODEL_PATH` |
+| `MODEL_ALIAS` | ConfigMap: `champion` | `champion` |
+| `MLFLOW_TRACKING_URI` | ConfigMap: `http://mlflow.mlops:5000` | `http://mlflow.mlops:5000` |
 | `DATABASE_URL` | Secret `amr-prediction-secrets` | нет - предсказания не логируются |
 
 ## Запуск
@@ -146,6 +149,7 @@ platform/             кластер kind, Traefik, MLflow, Ingress
 - [x] Платформа в kind: Traefik, MLflow за Ingress
 - [x] Обучение с регистрацией в MLflow и гейтом champion/challenger
 - [x] Сервис загружает модель из реестра по алиасу champion
+- [x] Деплой по кнопке в свой кластер через self-hosted runner, smoke через Ingress
 
 ## История изменений
 
