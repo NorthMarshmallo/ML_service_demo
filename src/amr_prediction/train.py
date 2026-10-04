@@ -86,6 +86,22 @@ def build_model(hidden_dim: int) -> MLPClassifier:
                          random_state=SEED)
 
 
+def train_pipeline(x_train: pd.DataFrame, y_train: pd.Series, hidden_dim: int) -> Pipeline:
+    # TF-IDF учится на исходном train, upsampling только для модели
+    tfidf = TfidfVectorizer(analyzer="char").fit(x_train["sequence"])
+    x_up, y_up = upsample(tfidf.transform(x_train["sequence"]), y_train.to_numpy())
+    return Pipeline([("tfidf", tfidf), ("model", build_model(hidden_dim).fit(x_up, y_up))])
+
+
+def confusion_matrix_figure(y_true, y_pred):
+    disp = ConfusionMatrixDisplay.from_predictions(y_true, y_pred, labels=CLASSES, xticks_rotation=45, colorbar=False)
+    for label in disp.ax_.get_xticklabels():
+        label.set(ha="right", rotation_mode="anchor")
+    disp.figure_.set_size_inches(9, 8)
+    disp.figure_.tight_layout()
+    return disp.figure_
+
+
 def champion_f1(client: MlflowClient) -> tuple[str | None, float | None]:
     try:
         mv = client.get_model_version_by_alias(MODEL_NAME, "champion")
@@ -94,21 +110,26 @@ def champion_f1(client: MlflowClient) -> tuple[str | None, float | None]:
     return mv.version, client.get_run(mv.run_id).data.metrics.get("macro_f1")
 
 
+def promote(client: MlflowClient, version: str, f1: float) -> tuple[str | None, float | None, bool]:
+    # challenger всегда на новой версии, champion - только если гейт пропустил
+    old_version, old_f1 = champion_f1(client)
+    promoted = old_f1 is None or f1 > old_f1 + MIN_GAIN
+    client.set_registered_model_alias(MODEL_NAME, "challenger", version)
+    if promoted:
+        client.set_registered_model_alias(MODEL_NAME, "champion", version)
+    return old_version, old_f1, promoted
+
+
 def main() -> dict:
     df, dropped = load_and_validate(DATA_PATH)
     x_train, x_test, y_train, y_test = train_test_split(
         df[FEATURES], df[TARGET], test_size=0.2, stratify=df[TARGET], random_state=SEED)
 
-    # TF-IDF учится на исходном train, upsampling только для модели
-    tfidf = TfidfVectorizer(analyzer="char").fit(x_train["sequence"])
-    x_up, y_up = upsample(tfidf.transform(x_train["sequence"]), y_train.to_numpy())
-    model = build_model(HIDDEN_DIM).fit(x_up, y_up)
-    pipeline = Pipeline([("tfidf", tfidf), ("model", model)])
+    pipeline = train_pipeline(x_train, y_train, HIDDEN_DIM)
     y_pred = pipeline.predict(x_test["sequence"])
     f1 = float(f1_score(y_test, y_pred, average="macro"))
 
     mlflow.set_experiment(EXPERIMENT)
-    client = MlflowClient()
     with mlflow.start_run() as run:
         metadata = {"features": FEATURES, "classes": list(pipeline.classes_), "n_train": len(x_train),
                     "data_rows": len(df), "sklearn": sklearn.__version__}
@@ -116,22 +137,12 @@ def main() -> dict:
                            "data": str(DATA_PATH), "data_md5": hashlib.md5(DATA_PATH.read_bytes()).hexdigest()})
         mlflow.log_metrics({"macro_f1": f1, "accuracy": float(accuracy_score(y_test, y_pred)), **dropped})
         mlflow.log_dict(metadata, "metadata.json")
-        disp = ConfusionMatrixDisplay.from_predictions(y_test, y_pred, labels=CLASSES, xticks_rotation=45, colorbar=False)
-        for label in disp.ax_.get_xticklabels():
-            label.set(ha="right", rotation_mode="anchor")
-        disp.figure_.set_size_inches(9, 8)
-        disp.figure_.tight_layout()
-        mlflow.log_figure(disp.figure_, "confusion_matrix.png")
+        mlflow.log_figure(confusion_matrix_figure(y_test, y_pred), "confusion_matrix.png")
         info = mlflow.sklearn.log_model(pipeline, name="model", registered_model_name=MODEL_NAME,
                                         skops_trusted_types=SKOPS_TRUSTED)
         version = info.registered_model_version
 
-    old_version, old_f1 = champion_f1(client)
-    promoted = old_f1 is None or f1 > old_f1 + MIN_GAIN
-    client.set_registered_model_alias(MODEL_NAME, "challenger", version)
-    if promoted:
-        client.set_registered_model_alias(MODEL_NAME, "champion", version)
-
+    old_version, old_f1, promoted = promote(MlflowClient(), version, f1)
     result = {"run_id": run.info.run_id, "version": version, "macro_f1": round(f1, 4),
               "champion_before": old_version, "champion_f1_before": old_f1, "promoted": promoted}
     print(json.dumps(result, ensure_ascii=False))
