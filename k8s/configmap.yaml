@@ -6,5 +6,5 @@ data:
   LOG_LEVEL: "INFO"
   MODEL_PATH: artifact/amr_prediction_bundle.joblib
   MLFLOW_TRACKING_URI: http://mlflow.mlops:5000
-  MODEL_NAME: churn
+  MODEL_NAME: amr_prediction
   MODEL_ALIAS: champion
