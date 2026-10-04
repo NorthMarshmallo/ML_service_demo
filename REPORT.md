@@ -2,7 +2,50 @@
 
 Трекинг изменений проекта. Формат: [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии: [SemVer](https://semver.org/lang/ru/).
 
-## [Unreleased]
+## [Unreleased] - 0.3.0 - реестр моделей и деплой в свой кластер
+
+Постоянный кластер kind с платформой в [`platform/`](platform/). Один вход на порт 80, маршрут по имени хоста:
+
+```
+браузер → 127.0.0.1:80 → kind-узел :30080 → Traefik → Ingress по хосту → MLflow :5000
+```
+
+### Приёмка
+
+| Изменение | Подтверждение |
+|---|---|
+| Платформа: kind с входом на :80, Traefik, MLflow на `mlflow.localhost` | [поды и Ingress](#поды-и-ingress), [UI MLflow](#mlflow-ui) |
+
+#### Поды и Ingress
+
+![pods-ingress](docs/screenshots/platform-pods-ingress.png)
+
+#### MLflow UI
+
+![mlflow-ui](docs/screenshots/mlflow-ui.png)
+
+### Добавлено
+
+- Кластер kind с пробросом `127.0.0.1:80` → NodePort 30080 - [`platform/kind-config.yaml`](platform/kind-config.yaml)
+- Traefik (чарт `traefik-41.6.0`) как Ingress-контроллер на NodePort 30080 - [`platform/traefik-values.yaml`](platform/traefik-values.yaml)
+- MLflow 3.16.1 в namespace `mlops`: SQLite и артефакты на PVC 2Gi - [`platform/mlflow.yaml`](platform/mlflow.yaml)
+- Ingress `mlflow.localhost` → Service `mlflow:5000` - [`platform/ingress.yaml`](platform/ingress.yaml)
+
+### Инциденты
+
+#### 1. kind load: образ MLflow не загружается в узел
+
+- **Симптом:** `kind load docker-image ghcr.io/mlflow/mlflow:v3.16.1 --name mlops` падает на импорте в узел.
+- **Ошибка:** `ctr ... images import --all-platforms ... failed`, `ctr: content digest sha256:03124d4b...: not found`
+- **Диагностика:** падает containerd внутри узла, а не чтение образа на ноутбуке. Локально образ только `amd64`, а Docker 29 хранит образы в containerd image store (`docker info`: `io.containerd.snapshotter.v1`).
+- **Причина:** образ мультиплатформенный, индекс ссылается на все платформы, а скачаны слои только `amd64`. kind импортирует с `--all-platforms` и не находит остальных.
+- **Исправление:** `kind load` пропущен, узел сам скачал образ из ghcr за 25,7 с. Обход: `docker save --platform linux/amd64` + `kind load image-archive`.
+
+### Вопросы и решения
+
+**6. Путь запроса от браузера до пода MLflow, зачем `--allowed-hosts` и `--cors-allowed-origins`, почему порт 80 задаётся при создании кластера.**
+
+`mlflow.localhost` резолвится в `127.0.0.1`, на порту 80 слушает Docker и пересылает на узел `172.19.0.2:30080`. Там NodePort передаёт запрос в под Traefik (`:8000`), Traefik по заголовку `Host` находит Ingress и отправляет в под MLflow (`10.244.0.6:5000`). MLflow 3 отвечает 403 на незнакомый `Host`, поэтому в `--allowed-hosts` все имена, по которым к нему приходят (`mlflow.localhost`, `mlflow.mlops`, `localhost`), а без `--cors-allowed-origins` UI на `http://mlflow.localhost` показывает `Failed to load`. Порт 80 задаётся при создании, потому что узел kind - Docker-контейнер, а порты контейнера публикуются только при его запуске.
 
 ## [0.2.0] - 2026-09-27 - CI/CD
 
