@@ -98,7 +98,7 @@ jobs:
       - name: smoke
         # через Ingress, как ходят пользователи: из сети kind узел виден по имени, Traefik слушает NodePort 30080
         run: |
-          U="http://$KIND_CLUSTER-control-plane:30080"; H="Host: churn.localhost"
+          U="http://$KIND_CLUSTER-control-plane:30080"; H="Host: amr.localhost"
 
           curl --fail -sS --retry 5 --retry-all-errors -H "$H" $U/health | tee health.json; echo
           grep -q '"model_version":"amr_prediction-v' health.json
