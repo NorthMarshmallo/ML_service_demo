@@ -121,6 +121,17 @@ kubectl apply -f platform/ingress.yaml
 
 MLflow: http://mlflow.localhost
 
+**Автомасштабирование (HPA)**
+
+```bash
+helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
+helm upgrade --install metrics-server metrics-server/metrics-server \
+  --version 3.14.0 -n kube-system -f platform/metrics-server-values.yaml --wait
+kubectl apply -f k8s/hpa.yaml
+uv run --with locust locust -f locustfile.py --headless -u 60 -r 20 -t 4m --host http://amr.localhost
+kubectl get hpa -w
+```
+
 **Данные (DVC)**
 
 Датасет `datasets/dataset.csv` хранится в DVC, в git - только `datasets/dataset.csv.dvc`. Хранилище - папка `../dvc-storage` рядом с репозиторием.
@@ -161,6 +172,7 @@ platform/             кластер kind, Traefik, MLflow, Ingress
 - [x] Сервис загружает модель из реестра по алиасу champion
 - [x] Деплой по кнопке в свой кластер через self-hosted runner, smoke через Ingress
 - [x] Версии данных в DVC, `data_md5` в прогоне MLflow
+- [x] HPA по CPU, нагрузка locust через Ingress
 
 ## История изменений
 
