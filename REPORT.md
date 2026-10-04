@@ -10,11 +10,14 @@
 браузер → 127.0.0.1:80 → kind-узел :30080 → Traefik → Ingress по хосту → MLflow :5000
 ```
 
+Обучение [`train.py`](src/amr_prediction/train.py) регистрирует каждую модель в MLflow. Новая версия получает алиас `challenger`, `champion` - только если гейт пропустил.
+
 ### Приёмка
 
 | Изменение | Подтверждение |
 |---|---|
 | Платформа: kind с входом на :80, Traefik, MLflow на `mlflow.localhost` | [поды и Ingress](#поды-и-ingress), [UI MLflow](#mlflow-ui) |
+| Обучение с регистрацией в MLflow и гейтом champion/challenger | [прогоны гейта](#прогоны-гейта), [реестр](#реестр-версии-и-алиасы), [прогон](#прогон-артефакт-и-параметры) |
 
 #### Поды и Ingress
 
@@ -24,12 +27,44 @@
 
 ![mlflow-ui](docs/screenshots/mlflow-ui.png)
 
+#### Прогоны гейта
+
+| Версия | `HIDDEN_DIM` | macro F1 | Решение |
+|---|---|---|---|
+| 1 | 64 | 0.9256 | champion (реестр пуст) |
+| 2 | 16 | 0.0088 | только challenger: второй слой из 2 нейронов, модель выродилась |
+| 3 | 32 | 0.8847 | только challenger: хуже champion |
+| 4 | 256 | 0.9535 | champion: лучше на 0.028 при `MIN_GAIN` 0.005 |
+
+![train-runs-1](docs/screenshots/train-runs-1.png)
+
+![train-runs-2](docs/screenshots/train-runs-2.png)
+
+#### Реестр: версии и алиасы
+
+![registry-aliases](docs/screenshots/registry-aliases.png)
+
+#### Прогон: артефакт и параметры
+
+Матрица ошибок и `data_md5` у версии 4.
+
+![run-artifacts](docs/screenshots/run-artifacts.png)
+
+![run-overview](docs/screenshots/run-overview.png)
+
 ### Добавлено
 
 - Кластер kind с пробросом `127.0.0.1:80` → NodePort 30080 - [`platform/kind-config.yaml`](platform/kind-config.yaml)
 - Traefik (чарт `traefik-41.6.0`) как Ingress-контроллер на NodePort 30080 - [`platform/traefik-values.yaml`](platform/traefik-values.yaml)
 - MLflow 3.16.1 в namespace `mlops`: SQLite и артефакты на PVC 2Gi - [`platform/mlflow.yaml`](platform/mlflow.yaml)
 - Ingress `mlflow.localhost` → Service `mlflow:5000` - [`platform/ingress.yaml`](platform/ingress.yaml)
+- Обучение с регистрацией в MLflow и гейтом по macro F1 (`MIN_GAIN` 0.005) - [`src/amr_prediction/train.py`](src/amr_prediction/train.py)
+- Классы модели - фиксированный список `CLASSES` вместо «7 самых частых» при каждом обучении; обучение останавливается, если в классе меньше 100 примеров; число отброшенных строк по каждому фильтру пишется в метрики прогона
+- В прогоне: матрица ошибок `confusion_matrix.png`, `metadata.json` с признаками и классами, параметр `data_md5`
+
+### Изменено
+
+- TF-IDF обучается на train до upsampling, как в ноутбуке: upsampling меняет только данные для модели, а не статистику признаков
 
 ### Инциденты
 
@@ -42,6 +77,12 @@
 - **Исправление:** `kind load` пропущен, узел сам скачал образ из ghcr за 25,7 с. Обход: `docker save --platform linux/amd64` + `kind load image-archive`.
 
 ### Вопросы и решения
+
+**Метрика гейта и `MIN_GAIN`.** Гейт сравнивает macro F1: классы несбалансированы, и accuracy держится за счёт частых классов, а macro F1 даёт каждому из 7 классов равный вес и падает, если модель проваливает редкий класс. `MIN_GAIN` 0.005: на тесте около 3 000 последовательностей разница меньше полупроцента может получиться от другого seed, гейт должен пропускать заметное улучшение, а не шум.
+
+**4. Чем challenger отличается от champion, почему сервис просит алиас, а не номер версии, и чем откат модели через алиас отличается от отката кода через `rollout undo`.**
+
+`challenger` всегда стоит на последней обученной версии, `champion` - на той, что прошла гейт и обслуживает запросы. Сервис просит `@champion`, потому что номер версии пришлось бы менять в конфиге и выкатывать заново, а алиас переезжает в реестре, и сервис подхватывает его при следующем старте. Откат модели - перевесить `champion` на прошлую версию и перезапустить поды, образ не меняется. `rollout undo` возвращает прошлый образ, то есть прошлый код, а модель останется той, на которую указывает алиас.
 
 **6. Путь запроса от браузера до пода MLflow, зачем `--allowed-hosts` и `--cors-allowed-origins`, почему порт 80 задаётся при создании кластера.**
 

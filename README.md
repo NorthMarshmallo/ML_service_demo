@@ -26,13 +26,15 @@ curl -X POST localhost:8000/v1/predict -H "Content-Type: application/json" -d @g
 
 ## Модель
 
-Классы: `aminoglycoside`, `bacitracin`, `beta_lactam`, `chloramphenicol`, `macrolide-lincosamide-streptogramin`, `multidrug`, `polymyxin`.
+Классы: `aminoglycoside`, `bacitracin`, `beta_lactam`, `chloramphenicol`, `macrolide-lincosamide-streptogramin`, `multidrug`, `polymyxin`. Это фиксированный список `CLASSES` в [`train.py`](src/amr_prediction/train.py): 7 самых частых классов исходного датасета (90% записей) выбраны один раз при исследовании и не пересчитываются при новом обучении. Если в данных у какого-то класса меньше 100 примеров, обучение останавливается. Добавить класс - осознанное изменение списка и новая версия модели.
 
-Пайплайн: `TfidfVectorizer(analyzer='char')` + `MLPClassifier`. Обучение: [experiments/notebooks/amr-prediction.ipynb](experiments/notebooks/amr-prediction.ipynb).
+Пайплайн: `TfidfVectorizer(analyzer='char')` + `MLPClassifier`. Исследование: [experiments/notebooks/amr-prediction.ipynb](experiments/notebooks/amr-prediction.ipynb), обучение с регистрацией в MLflow: [src/amr_prediction/train.py](src/amr_prediction/train.py).
 
-Данные: 17 000 белковых последовательностей, 26 классов антибиотиков. Для обучения взяты 7 самых частых классов (90% записей). Удалены дубликаты и последовательности с нестандартными аминокислотами (`X`, `Z`). Разбиение train/test 80/20 со стратификацией по классу; редкие классы в train дополнены upsampling до размера самого частого.
+Данные: 17 000 белковых последовательностей, 26 классов антибиотиков. Строки остальных классов, последовательности с нестандартными аминокислотами (`X`, `Z`) или короче 20 и дубликаты отбрасываются, число отброшенных по каждому фильтру пишется в прогон MLflow. Разбиение train/test 80/20 со стратификацией по классу; TF-IDF обучается на train, затем редкие классы дополняются upsampling до размера самого частого.
 
 Метрики на test (3 032 последовательности): **macro F1 0.953**, accuracy 0.97. Слабее всего `multidrug` (F1 0.89).
+
+Реестр: каждое обучение регистрирует версию модели `amr_prediction` с алиасом `challenger`; алиас `champion` она получает, если macro F1 выше, чем у текущего champion, хотя бы на 0.005. Сервис пока загружает бандл из `artifact/`.
 
 Ограничения: модель всегда отвечает одним из 7 классов, даже если белок не связан с устойчивостью к ним; признаки - только частоты аминокислот, порядок в последовательности не учитывается.
 
@@ -113,10 +115,18 @@ kubectl apply -f platform/ingress.yaml
 
 MLflow: http://mlflow.localhost
 
+**Обучение с регистрацией в MLflow**
+
+```bash
+MLFLOW_TRACKING_URI=http://mlflow.localhost uv run python -m amr_prediction.train
+```
+
+Гиперпараметр `HIDDEN_DIM` (по умолчанию 256), запас гейта `GATE_MIN_GAIN` (по умолчанию 0.005).
+
 ## Структура
 
 ```
-src/amr_prediction/   код сервиса: API, настройки, работа с БД
+src/amr_prediction/   код сервиса (API, настройки, работа с БД) и обучения
 artifact/             обученная модель
 experiments/          ноутбук обучения
 tests/                unit- и интеграционные тесты
@@ -131,6 +141,7 @@ platform/             кластер kind, Traefik, MLflow, Ingress
 - [x] Docker, compose, Kubernetes (2 реплики, пробы, ресурсы)
 - [x] CI/CD: тесты, образ в ghcr, деплой в kind
 - [x] Платформа в kind: Traefik, MLflow за Ingress
+- [x] Обучение с регистрацией в MLflow и гейтом champion/challenger
 
 ## История изменений
 
