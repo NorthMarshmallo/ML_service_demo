@@ -29,6 +29,7 @@ Run workflow: tests → build → deploy на [self-hosted, kind]: образ в
 | CI/CD в свой кластер: runner в сети kind, Secret через `apply`, smoke через Ingress | [зелёный прогон](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/37231251038), [деплой в свой кластер](#деплой-в-свой-кластер) |
 | Деплой по кнопке (`workflow_dispatch`) | [деплой по кнопке](#деплой-по-кнопке) |
 | Версии данных в DVC, обучение на двух версиях | [версии данных](#версии-данных-в-dvc) |
+| Автомасштабирование HPA по CPU, нагрузка через Ingress | [HPA](#автомасштабирование-hpa) |
 | Красные прогоны деплоя: диагноз по логу и починка | [инциденты 2-6](#инциденты) |
 
 #### Поды и Ingress
@@ -156,8 +157,36 @@ $ wc -l datasets/dataset.csv
 
 ![data-md5-compare](docs/screenshots/data-md5-compare.png)
 
+#### Автомасштабирование HPA
+
+metrics-server из чарта `metrics-server/metrics-server` 3.14.0 с `--kubelet-insecure-tls` ([`platform/metrics-server-values.yaml`](platform/metrics-server-values.yaml)), HPA [`k8s/hpa.yaml`](k8s/hpa.yaml): 2-6 реплик, цель 60% CPU от `requests.cpu` 100m. Нагрузка - [`locustfile.py`](locustfile.py), POST `/v1/predict` со случайной последовательностью из `examples/sample_test_sequences.csv`, через Ingress `http://amr.localhost`.
+
+| Пользователи | Длительность | Реплики | RPS | p50 | p95 | p99 | Ошибки | CPU на под | Postgres |
+|---|---|---|---|---|---|---|---|---|---|
+| 20 | 2 мин | 2 → 3 → 5 | 19.8 | 8 мс | 11 мс | 16 мс | 0 | 51-56m | 156m |
+| 60 | 4 мин | 5 → 6 (`maxReplicas`) | 59.4 | 7 мс | 12 мс | 17 мс | 0 | 127-135m | 458m |
+| 100 | 2 мин | 2 → 4 → 6 (`maxReplicas`) | 95.8 | 8 мс | 140 мс | 610 мс | 0 | 189-228m | 776m |
+
+Прогон на 60 пользователей начат сразу после прогона на 20, на 5 репликах. На 100 пользователях первые 20 с, пока подов было 2-4, p95 доходил до 650 мс, после выхода на 6 подов к концу прогона упал до 150 мс. Без нагрузки поды берут 4m CPU.
+
+События HPA (`kubectl describe hpa amr-prediction-service`):
+
+```
+SuccessfulRescale  New size: 3; reason: cpu resource utilization (percentage of request) above target
+SuccessfulRescale  New size: 5; reason: cpu resource utilization (percentage of request) above target
+SuccessfulRescale  New size: 4; reason: All metrics below target
+SuccessfulRescale  New size: 2; reason: All metrics below target          (x3 over 28m)
+SuccessfulRescale  New size: 4; reason: cpu resource utilization (percentage of request) above target  (x3 over 27m)
+SuccessfulRescale  New size: 6; reason: cpu resource utilization (percentage of request) above target  (x4 over 37m)
+```
+
+При 6 репликах под нагрузкой: `ScalingLimited True TooManyReplicas` - HPA хотел больше, чем `maxReplicas`.
+
+**Requests памяти.** Память пода от нагрузки почти не зависит: 176 Mi без нагрузки, максимум 182 Mi на 100 пользователях - модель загружается один раз при старте. 182 Mi + треть ≈ 240 Mi: `requests.memory` 256Mi → 240Mi, запрос был почти честным.
+
 ### Добавлено
 
+- HPA по CPU (2-6 реплик, 60%), metrics-server для kind, locust через Ingress - [`k8s/hpa.yaml`](k8s/hpa.yaml), [`platform/metrics-server-values.yaml`](platform/metrics-server-values.yaml), [`locustfile.py`](locustfile.py)
 - Датасет под DVC, хранилище `../dvc-storage`; вторая версия данных без дублей и противоречивых меток - [`datasets/dataset.csv.dvc`](datasets/dataset.csv.dvc)
 - Кластер kind с пробросом `127.0.0.1:80` → NodePort 30080 - [`platform/kind-config.yaml`](platform/kind-config.yaml)
 - Traefik (чарт `traefik-41.6.0`) как Ingress-контроллер на NodePort 30080 - [`platform/traefik-values.yaml`](platform/traefik-values.yaml)
@@ -239,13 +268,47 @@ $ wc -l datasets/dataset.csv
 
 **Метрика гейта и `MIN_GAIN`.** Гейт сравнивает macro F1: классы несбалансированы, и accuracy держится за счёт частых классов, а macro F1 даёт каждому из 7 классов равный вес и падает, если модель проваливает редкий класс. `MIN_GAIN` 0.005: на тесте около 3 000 последовательностей разница меньше полупроцента может получиться от другого seed, гейт должен пропускать заметное улучшение, а не шум.
 
+**1. Почему tests и build идут в облаке GitHub, а deploy не может, какие ещё есть способы доставить код в кластер за NAT и почему выбран runner.**
+
+tests и build ничего не знают о кластере: им нужны только код, Postgres-сервис в job и ghcr, всё это доступно из облака. Кластер `mlops` живёт на ноутбуке: API-сервер kind опубликован только на `127.0.0.1` ноутбука, Ingress - на `127.0.0.1:80`, сам ноутбук за NAT, и облачная машина GitHub до него не достучится. Другие способы: открыть API-сервер наружу через туннель (ngrok, cloudflared) или VPN (Tailscale) - тогда в интернете торчит доступ ко всему кластеру; pull-подход GitOps - Argo CD или Flux внутри кластера сами забирают манифесты из git, входящие подключения не нужны, но это ещё один компонент в кластере. Runner выбран, потому что он сам подключается к GitHub исходящим HTTPS и забирает задания, входящие порты не открываются, а job `deploy` остаётся обычным шагом того же `ci.yml` с теми же логами и секретами.
+
+**2. Зачем runner запущен с `--network kind`, сокетом Docker и `--group-add`, и что сломается без каждого.**
+
+- `--network kind` - контейнер runner в той же Docker-сети, что и узел `mlops-control-plane`, и видит его по имени: `kind export kubeconfig --internal` пишет адрес API `https://mlops-control-plane:6443`, а smoke ходит на `mlops-control-plane:30080`. Без этого имя не резолвится, `kubectl get nodes` и smoke падают.
+- Сокет `/var/run/docker.sock` - runner управляет Docker ноутбука: `docker pull` образа из ghcr, `kind load docker-image` (сохраняет образ и импортирует его в контейнер узла), `kind export kubeconfig` находит узел среди контейнеров Docker. Без сокета `Cannot connect to the Docker daemon`, и kind не видит ни одного кластера.
+- `--group-add` - сокет на хосте `srw-rw---- root:983`, писать в него может только root или группа 983 (`docker` на этом Linux), а runner работает от пользователя `runner` (uid 1001). Поэтому runner запущен с `--group-add 983`, в `id` внутри контейнера видна группа 983. В задании `--group-add 0`, потому что в Docker Desktop сокет принадлежит группе root. Без этого флага `permission denied while trying to connect to the Docker daemon socket`.
+
+**3. Почему `create secret` заменили на `--dry-run=client -o yaml | kubectl apply`, и что будет при втором деплое без этой замены.**
+
+Раньше deploy каждый раз создавал новый пустой kind в облаке, и `create secret` всегда создавал Secret впервые. Кластер `mlops` постоянный: после первого деплоя Secret `amr-prediction-secrets` в нём уже есть, и второй `kubectl create secret` падает с `Error from server (AlreadyExists): secrets "amr-prediction-secrets" already exists`, шаг `подтягиваем секреты` красный на каждом деплое после первого. `--dry-run=client -o yaml` только печатает манифест Secret, ничего не отправляя в кластер, а `kubectl apply` создаёт его, если нет, и обновляет, если есть. Заодно новый пароль из GitHub Secrets при следующем деплое попадает в кластер, а не игнорируется.
+
 **4. Чем challenger отличается от champion, почему сервис просит алиас, а не номер версии, и чем откат модели через алиас отличается от отката кода через `rollout undo`.**
 
 `challenger` всегда стоит на последней обученной версии, `champion` - на той, что прошла гейт и обслуживает запросы. Сервис просит `@champion`, потому что номер версии пришлось бы менять в конфиге и выкатывать заново, а алиас переезжает в реестре, и сервис подхватывает его при следующем старте. Откат модели - перевесить `champion` на прошлую версию и перезапустить поды, образ не меняется. `rollout undo` возвращает прошлый образ, то есть прошлый код, а модель останется той, на которую указывает алиас.
 
+**5. Что будет, если задеплоить сервис в кластер, где никто ещё не обучил модель, и как это увидеть в k9s и в логе CI.**
+
+Сервис на старте спрашивает реестр `amr_prediction@champion`, получает `RESOURCE_DOES_NOT_EXIST: Registered Model with name=amr_prediction not found` и завершается с `Application startup failed`. Kubernetes перезапускает контейнер по кругу: в k9s поды `0/1`, статус `CrashLoopBackOff`, счётчик RESTARTS растёт, в логах пода (`l`) traceback из `model_store.py`. В CI шаг `сервис` падает по таймауту `rollout status` (`error: timed out waiting for the condition`), а в шаге `диагностика` в логе пода та же ошибка. Ровно это произошло в [инциденте 3](#3-модели-нет-в-реестре), только с несуществующим именем `churn` вместо необученной модели. Если в кластере уже работали старые поды, rolling update их не тронет, пока новые не станут готовы, и старая версия продолжит отвечать; при первом деплое сервиса просто не будет.
+
 **6. Путь запроса от браузера до пода MLflow, зачем `--allowed-hosts` и `--cors-allowed-origins`, почему порт 80 задаётся при создании кластера.**
 
 `mlflow.localhost` резолвится в `127.0.0.1`, на порту 80 слушает Docker и пересылает на узел `172.19.0.2:30080`. Там NodePort передаёт запрос в под Traefik (`:8000`), Traefik по заголовку `Host` находит Ingress и отправляет в под MLflow (`10.244.0.6:5000`). MLflow 3 отвечает 403 на незнакомый `Host`, поэтому в `--allowed-hosts` все имена, по которым к нему приходят (`mlflow.localhost`, `mlflow.mlops`, `localhost`), а без `--cors-allowed-origins` UI на `http://mlflow.localhost` показывает `Failed to load`. Порт 80 задаётся при создании, потому что узел kind - Docker-контейнер, а порты контейнера публикуются только при его запуске.
+
+**7. Сколько реплик HPA должен был выставить по формуле и почему вниз реплики уходят дольше, чем вверх.**
+
+Формула: `desired = ceil(current × текущая загрузка / целевая)`, загрузка - доля от `requests.cpu` 100m. На 20 пользователях 5 подов по ~53m, то есть суммарно ~265m. На 2 подах это 132% на под: `ceil(2 × 132 / 60) = 5` - ровно столько HPA и выставил (через 3, пока locust набирал пользователей). На 60 пользователях ~790m суммарно, на 5 подах 158%: `ceil(5 × 158 / 60) = 14`, на 100 пользователях ~1270m: `ceil(1270 / 60) = 22`. В обоих случаях упор в `maxReplicas: 6`, в условиях HPA `TooManyReplicas`. Вниз реплики уходили примерно через 5 минут после конца нагрузки: у scale down окно стабилизации 300 с, HPA берёт максимальную рекомендацию за это окно и не убирает поды на каждом провале нагрузки. У scale up окна нет, поэтому рост идёт сразу.
+
+**8. Что лежит в git, а что в хранилище DVC, и как восстановить ровно те данные, на которых обучена версия N модели.**
+
+В git: код, `datasets/dataset.csv.dvc` (md5, размер и путь файла), `.dvc/config` с адресом хранилища и `datasets/.gitignore`, который не пускает CSV в git. В хранилище `../dvc-storage` сами файлы, разложенные по md5: `files/md5/96/bb46...` (v1) и `files/md5/fb/b751...` (v2). Восстановление данных версии N:
+
+1. MLflow → Model registry → `amr_prediction` → версия N → её прогон → параметр `data_md5`. Например, у версии 5 `fbb751c61c3de006a7ffe188e3d84ddb`.
+2. Найти коммит, где `.dvc`-файл с этим md5: `git log -S fbb751c61c3de006a7ffe188e3d84ddb --oneline -- datasets/dataset.csv.dvc` → `f32a35f data v2: ...`.
+3. Взять `.dvc`-файл из этого коммита и данные под него: `git checkout f32a35f -- datasets/dataset.csv.dvc && uv run dvc pull`.
+4. Проверить: `md5sum datasets/dataset.csv` совпадает с `data_md5` в прогоне.
+5. Вернуть текущую версию: `git checkout HEAD -- datasets/dataset.csv.dvc && uv run dvc checkout`.
+
+Упрощение: прогон хранит только md5 данных, коммит ищется поиском по истории. Надёжнее писать в прогон ещё и git-коммит.
 
 ## [0.2.0] - 2026-09-27 - CI/CD
 
