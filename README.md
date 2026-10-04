@@ -99,6 +99,20 @@ kubectl port-forward svc/amr-prediction-service 8080:80
 curl -X POST localhost:8080/v1/predict -H "Content-Type: application/json" -d @good.json
 ```
 
+**Платформа: kind + Traefik + MLflow**
+
+Нужен ещё `helm`.
+
+```bash
+kind create cluster --config platform/kind-config.yaml --name mlops
+helm repo add traefik https://traefik.github.io/charts
+helm upgrade --install traefik traefik/traefik -n traefik --create-namespace -f platform/traefik-values.yaml
+kubectl apply -f platform/mlflow.yaml
+kubectl apply -f platform/ingress.yaml
+```
+
+MLflow: http://mlflow.localhost
+
 ## Структура
 
 ```
@@ -107,6 +121,7 @@ artifact/             обученная модель
 experiments/          ноутбук обучения
 tests/                unit- и интеграционные тесты
 k8s/                  манифесты Kubernetes
+platform/             кластер kind, Traefik, MLflow, Ingress
 .github/workflows/    CI/CD
 ```
 
@@ -115,6 +130,7 @@ k8s/                  манифесты Kubernetes
 - [x] FastAPI-сервис, логирование предсказаний в Postgres
 - [x] Docker, compose, Kubernetes (2 реплики, пробы, ресурсы)
 - [x] CI/CD: тесты, образ в ghcr, деплой в kind
+- [x] Платформа в kind: Traefik, MLflow за Ingress
 
 ## История изменений
 
