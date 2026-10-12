@@ -57,7 +57,7 @@ def health():
     return {
         "status": "ok",
         "model_version": getattr(app.state, "version", "unknown"),
-        "model_path": settings.model_path,
+        "model_source": f"models:/{settings.model_name}@{settings.model_alias}" if settings.model_name else settings.model_path,
     }
 
 
