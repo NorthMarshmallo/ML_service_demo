@@ -2,7 +2,7 @@
 
 Трекинг изменений проекта. Формат: [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии: [SemVer](https://semver.org/lang/ru/).
 
-## [Unreleased] - 0.3.0 - реестр моделей и деплой в свой кластер
+## [0.3.0] - 2026-10-05 - реестр моделей и деплой в свой кластер
 
 Постоянный кластер kind с платформой в [`platform/`](platform/). Один вход на порт 80, маршрут по имени хоста:
 
@@ -510,6 +510,7 @@ build запустится параллельно с tests и не будет ж
 - **Причина:** в `requests` запрошено больше памяти, чем есть на ноде.
 - **Исправление:** `1000Mi` в `requests` и `limits`, `kubectl apply -f k8s/`. Оба пода перешли в `Running`.
 
-[Unreleased]: https://github.com/NorthMarshmallo/ML_service_demo/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/NorthMarshmallo/ML_service_demo/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/NorthMarshmallo/ML_service_demo/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/NorthMarshmallo/ML_service_demo/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/NorthMarshmallo/ML_service_demo/releases/tag/v0.1.0
