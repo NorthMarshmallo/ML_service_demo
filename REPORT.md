@@ -2,6 +2,84 @@
 
 Трекинг изменений проекта. Формат: [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии: [SemVer](https://semver.org/lang/ru/).
 
+## [Unreleased] - платформа одной командой и мониторинг сервиса
+
+Платформа поднимается одним скриптом [`platform/up.sh`](platform/up.sh): кластер kind, Traefik, MLflow, Airflow, S3 на RustFS, Prometheus и Grafana, metrics-server. Сервис отдаёт метрики запросов и модели, Prometheus забирает их с каждого пода, Grafana показывает дашборд:
+
+```
+поды api :8000/metrics ◄── Prometheus (ServiceMonitor, раз в 15 с) ◄── Grafana (дашборд из ConfigMap)
+```
+
+Ветки: компоненты платформы - [PR #35](https://github.com/NorthMarshmallo/ML_service_demo/pull/35), `up.sh` - [PR #36](https://github.com/NorthMarshmallo/ML_service_demo/pull/36), метрики и дашборд - [PR #37](https://github.com/NorthMarshmallo/ML_service_demo/pull/37), бакеты задержки - [PR #38](https://github.com/NorthMarshmallo/ML_service_demo/pull/38).
+
+Разделение ответственности: `up.sh` ставит то, что не зависит от сервиса и меняется редко (платформа, один раз на кластер); CI выкатывает всё, что относится к сервису, на каждый деплой (`k8s/`, `k8s/monitoring/`).
+
+### Приёмка
+
+| Изменение | Подтверждение |
+|---|---|
+| Метрики сервиса и модели, дашборд | [дашборд под трафиком](#дашборд-под-трафиком) |
+| Деплой с мониторингом, smoke по метрике версии модели | [зелёный прогон](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/38561348804), [деплой](#деплой-с-мониторингом) |
+| Бакеты задержки по серверному времени | [инцидент 1](#1-задержка-на-дашборде-втрое-выше-чем-у-клиента) |
+
+#### Деплой с мониторингом
+
+[Прогон](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/38561348804) по кнопке на `main` (`f29b657`, с исправленными бакетами): `tests`, `build`, `deploy` зелёные, `deploy` выполнил runner `mlops-kind`. Шаги `deploy`: образ в кластер → секреты → база → сервис → `мониторинг` (`kubectl apply -f k8s/monitoring/`) → `smoke`, в том числе `amr_model_info{version="amr_prediction-v…"}` в `/metrics`.
+
+Runner пересоздан перед деплоем: контейнер `gh-runner` был удалён, регистрация с тем же именем `mlops-kind` - через `config.sh --replace`, команда в README.
+
+#### Дашборд под трафиком
+
+`scripts/traffic.py --rps 5 --bad 0.05` через Ingress, 30 минут, Grafana → AMR service:
+
+![grafana-dashboard](docs/screenshots/grafana-dashboard.png)
+
+- версия модели: `amr_prediction-v4` в 2 подах, рестартов 0;
+- `/v1/predict` около 4.5 запроса/с с кодом 2xx и около 0.2 с кодом 4xx - это `--bad 0.05`;
+- задержка после деплоя с новыми бакетами (с 15:08): p50 23-30 мс, p95 38-40 мс; до него, на старых бакетах, p95 46-49 мс;
+- предсказания по классам: `beta_lactam` около 35%, `bacitracin` около 27%, остальные 5 классов по 2-13%;
+- уверенность: из около 2 000 предсказаний за 15 минут 1 712 в бакете 0.9-1.0, ниже 0.2 - ни одного; ниже 1/7 ≈ 0.14 значений быть не может: это вероятность самого вероятного из 7 классов.
+
+### Добавлено
+
+- `platform/up.sh`: кластер `mlops` (имя меняется через `CLUSTER`), предзагрузка образов в узел, Secret `s3-credentials`, MLflow, RustFS, Airflow, Traefik, kube-prometheus-stack, metrics-server, Ingress, бакет `dvc`; повторный запуск только обновляет; если бакет не создан за 60 с, скрипт завершается с ошибкой - [`platform/up.sh`](platform/up.sh)
+- kube-prometheus-stack 91.5.2 без Alertmanager и без таргетов, которые kind не отдаёт (etcd, scheduler, controller-manager, kube-proxy, node-exporter); ServiceMonitor берутся из всех namespace - [`platform/monitoring-values.yaml`](platform/monitoring-values.yaml)
+- Airflow 3.3.2 standalone в одном поде, DAG из ConfigMap `airflow-dags`; права на поды в `mlops` для задач обучения и на перезапуск только деплоймента `amr-prediction-service` - [`platform/airflow.yaml`](platform/airflow.yaml)
+- RustFS 1.0.0 как S3 для DVC: API на 9000, консоль на 9001, ключи из Secret `s3-credentials`, данные на PVC 2Gi - [`platform/s3.yaml`](platform/s3.yaml)
+- Ingress `airflow.localhost`, `grafana.localhost`, `s3.localhost`, `s3-console.localhost` - [`platform/ingress.yaml`](platform/ingress.yaml)
+- metrics-server ставится вместе с платформой: HPA на новом кластере сразу получает загрузку CPU
+- `.gitattributes`: `*.sh` всегда с LF, иначе после клонирования на Windows `up.sh` падает на `$'\r': command not found`
+- `/metrics`: `http_requests_total` и `http_request_duration_seconds` из `prometheus-fastapi-instrumentator`, свои `amr_model_info{version}`, `amr_predictions_total{antibiotic_class}`, `amr_score`. Бакеты задержки по серверному времени: 5, 10, 15, 20, 25, 30, 35, 40, 50, 75 мс, дальше 0.1-1 с, почему так - [инцидент 1](#1-задержка-на-дашборде-втрое-выше-чем-у-клиента) - [`app.py`](src/amr_prediction/service/app.py)
+- ServiceMonitor по метке `app: amr_prediction` и порту `http` - [`k8s/monitoring/servicemonitor.yaml`](k8s/monitoring/servicemonitor.yaml)
+- Дашборд Grafana: версия модели в подах, запросы за 5 минут, рестарты контейнеров, запросы в секунду по ручке и коду, задержка p50/p95, доля предсказаний по классам, распределение уверенности - [`k8s/monitoring/dashboard.yaml`](k8s/monitoring/dashboard.yaml)
+- `preStop` с паузой 5 с перед остановкой контейнера - [`k8s/deployment.yaml`](k8s/deployment.yaml)
+- Генератор трафика через Ingress: последовательности из датасета, отфильтрованные теми же правилами, что вход сервиса; `--bad` - доля заведомо плохих запросов - [`scripts/traffic.py`](scripts/traffic.py)
+- CI: шаг `мониторинг` применяет `k8s/monitoring/`; smoke проверяет `amr_model_info{version="amr_prediction-v…"}` в `/metrics`. Не счётчик запросов: `/metrics` через Ingress отвечает случайный под, а POST перед этим мог уйти в другой, и счётчика `/v1/predict` в этом поде ещё нет. `amr_model_info` выставляется при старте в каждом поде и заодно подтверждает, что модель из реестра
+
+### Изменено
+
+- Service: порт назван `http`, у самого Service метка `app: amr_prediction` - по ним его находит ServiceMonitor
+- README: адреса интерфейсов, запуск платформы через `up.sh`, регистрация runner, мониторинг; убран запуск в отдельном кластере `amr` через port-forward: с `MODEL_NAME` в ConfigMap он требует MLflow и без платформы не стартует
+
+### Инциденты
+
+#### 1. Задержка на дашборде втрое выше, чем у клиента
+
+- **Симптом:** под `scripts/traffic.py --rps 5` панель «Задержка /v1/predict» показывает p50 ≈ 25 мс и p95 ≈ 43 мс, а в прогонах locust было 7-8 и 11-12 мс.
+- **Диагностика:** клиент видит то же, что раньше: 10 запросов `curl` через Ingress - 5-17 мс, медиана ≈ 8 мс; `latency_ms` в ответе (только модель) 4.3 мс. По Prometheus за 30 минут среднее `http_request_duration_seconds` 25.7 мс, из 1437 запросов 1134 в бакете 20-30 мс, 230 в бакете 30-50 мс, быстрее 20 мс - 73. Внутри пода `psycopg.connect` + запрос + commit - медиана 12.5 мс, максимум 26 мс.
+- **Причина:** строка в Postgres пишется фоновой задачей (`bg.add_task(db.save_prediction, ...)`). Starlette отправляет ответ клиенту, а потом выполняет фоновую задачу в том же вызове приложения, и instrumentator, который засекает время вокруг всего вызова, считает и её. `save_prediction` открывает новое соединение на каждый запрос - около 12 мс плюс INSERT. Бакеты были подобраны по клиентскому времени, поэтому почти все запросы попали в один бакет 20-30 мс, а p50 и p95 получались интерполяцией внутри широких бакетов.
+- **Исправление:** бакеты подобраны вокруг серверного времени - [PR #38](https://github.com/NorthMarshmallo/ML_service_demo/pull/38). Клиенту запись в базу не мешает: ответ уходит до неё. Сократить саму запись можно пулом соединений (`psycopg_pool`), тогда серверное время упадёт примерно до времени модели.
+
+### Вопросы и решения
+
+**6. Слои дашборда и почему в метках нет `request_id`.** Инфраструктуру на дашборде представляет одна панель - рестарты контейнеров (`kube_pod_container_status_restarts_total` из kube-state-metrics). CPU и память подов можно увидеть через `kubectl top pods`, по ним же масштабирует HPA. Слой сервиса - запросы в секунду по ручке и коду ответа, запросы за 5 минут, задержка p50 и p95: их даёт instrumentator, и для любого HTTP-API они выглядели бы так же. Слой модели - версия в подах, доля предсказаний по классам и распределение уверенности. Только по этим панелям видно, что поменялась сама модель или её ответы: сервис может отвечать 200 на каждый запрос и при этом предсказывать не то.
+
+Метки ограничены коротким списком значений: 7 классов и 1-2 версии. Prometheus заводит отдельный временной ряд на каждое сочетание меток в каждом поде, так что `request_id` в метке означал бы новый ряд на каждый запрос: память Prometheus росла бы без ограничений, а любой запрос к метрике перебирал бы миллионы рядов. Конкретный запрос по `request_id` ищется в таблице `predictions` в Postgres.
+
+**7. Выкат модели и `preStop`.** Новая модель выкатывается без нового образа: `champion` переставляется в реестре, деплоймент перезапускается. RollingUpdate по умолчанию (`maxSurge` и `maxUnavailable` по 25%) при двух репликах меняет поды по одному. Новый под получает трафик только после того, как `/ready` ответил 200, то есть модель уже загружена из реестра; после этого удаляется один старый. Пока идёт замена, отвечают обе версии, и на панели «Версия модели в подах» две строки.
+
+Уязвимый момент - удаление пода. Kubernetes одновременно исключает его из Endpoints и начинает останавливать, а Traefik узнаёт об изменении Endpoints с задержкой и ещё успевает отправить туда запросы. Пауза `preStop` 5 с держит под рабочим, пока он не выйдет из маршрута; затем uvicorn получает SIGTERM и завершает начатые запросы. Без паузы такой запрос уронил smoke в [инциденте 5](#5-smoke-запрос-попал-в-завершающийся-под) версии 0.3.0: POST попал в завершающийся под и вернулся пустым. Тогда хватило повтора `curl`, но он защищал только smoke, а `preStop` убирает саму причину для всех клиентов.
+
 ## [0.3.0] - 2026-10-05 - реестр моделей и деплой в свой кластер
 
 Постоянный кластер kind с платформой в [`platform/`](platform/). Один вход на порт 80, маршрут по имени хоста:
@@ -210,6 +288,7 @@ SuccessfulRescale  New size: 6; reason: cpu resource utilization (percentage of 
 ### Исправлено
 
 - Smoke: POST `/v1/predict` с повторами и `-S`, ошибка `curl` видна в логе - [PR #30](https://github.com/NorthMarshmallo/ML_service_demo/pull/30)
+- `/health` в кластере отдавал `model_path: artifact/amr_prediction_bundle.joblib`, хотя модель загружена из реестра и файл не читался (видно на скрине отката рядом с `amr_prediction-v1`). Поле заменено на `model_source`: `models:/amr_prediction@champion` с `MODEL_NAME`, путь к файлу без него - [PR #34](https://github.com/NorthMarshmallo/ML_service_demo/pull/34)
 
 ### Инциденты
 
