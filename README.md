@@ -42,11 +42,11 @@ curl -X POST http://amr.localhost/v1/predict -H "Content-Type: application/json"
 
 ## Модель
 
-Классы: `aminoglycoside`, `bacitracin`, `beta_lactam`, `chloramphenicol`, `macrolide-lincosamide-streptogramin`, `multidrug`, `polymyxin`. Это фиксированный список `CLASSES` в [`train.py`](src/amr_prediction/train.py): 7 самых частых классов исходного датасета (90% записей) выбраны один раз при исследовании и не пересчитываются при новом обучении. Если в данных у какого-то класса меньше 100 примеров, обучение останавливается. Добавить класс - осознанное изменение списка и новая версия модели.
+Классы: `aminoglycoside`, `bacitracin`, `beta_lactam`, `chloramphenicol`, `macrolide-lincosamide-streptogramin`, `multidrug`, `polymyxin`. Это фиксированный список `CLASSES` в [`train.py`](src/amr_prediction/train.py): 7 самых частых классов исходного датасета (90% записей) выбраны один раз при исследовании и не пересчитываются при новом обучении. Добавить класс - осознанное изменение списка и новая версия модели.
 
 Пайплайн: `TfidfVectorizer(analyzer='char')` + `MLPClassifier`. Исследование: [experiments/notebooks/amr-prediction.ipynb](experiments/notebooks/amr-prediction.ipynb), обучение с регистрацией в MLflow: [src/amr_prediction/train.py](src/amr_prediction/train.py).
 
-Данные: 17 000 белковых последовательностей, 26 классов антибиотиков. Строки остальных классов, последовательности с нестандартными аминокислотами (`X`, `Z`) или короче 20 и дубликаты отбрасываются, число отброшенных по каждому фильтру пишется в прогон MLflow. Разбиение train/test 80/20 со стратификацией по классу; TF-IDF обучается на train, затем редкие классы дополняются upsampling до размера самого частого.
+Данные: 17 000 белковых последовательностей, 26 классов антибиотиков. Строки остальных классов, последовательности с нестандартными аминокислотами (`X`, `Z`) или короче 20 и полные дубликаты отбрасываются, число отброшенных по каждому фильтру пишется в прогон MLflow. Очищенный слой перед обучением проверяется схемами pandera: длина, состав аминокислот, уникальность последовательности, объём выгрузки, медиана длины и доли классов. Разбиение train/test 80/20 со стратификацией по классу; TF-IDF обучается на train, затем редкие классы дополняются upsampling до размера самого частого.
 
 Метрики на test (3 032 последовательности): **macro F1 0.953**, accuracy 0.97. Слабее всего `multidrug` (F1 0.89).
 
@@ -158,6 +158,15 @@ git checkout <коммит> -- datasets/dataset.csv.dvc && uv run dvc checkout  
 uv run dvc add datasets/dataset.csv && uv run dvc push    # новая версия данных, до git push
 ```
 
+**Проверка данных**
+
+```bash
+MLFLOW_TRACKING_URI=http://mlflow.localhost uv run python -m amr_prediction.data
+DATA_PATH=<другой файл> MLFLOW_TRACKING_URI=http://mlflow.localhost uv run python -m amr_prediction.data
+```
+
+Схемы pandera - в [`data.py`](src/amr_prediction/data.py). Прогон в эксперименте `amr_prediction_data` с тегом `valid`; при нарушениях - артефакт `failure_cases.csv` и код выхода 1.
+
 **Деплой**
 
 Job `deploy` выполняется на self-hosted runner в Docker-сети `kind`, рядом с кластером. Токен регистрации: Settings → Actions → Runners → New self-hosted runner.
@@ -227,6 +236,7 @@ scripts/              генератор трафика
 - [x] Платформа одной командой: Traefik, MLflow, Airflow, RustFS, Prometheus, Grafana
 - [x] Метрики сервиса и модели, дашборд Grafana, smoke по метрике версии модели
 - [x] Данные DVC в S3 кластера, в образе только указатели
+- [x] Проверка данных схемами pandera, прогон validate в MLflow
 
 ## История изменений
 
