@@ -14,5 +14,9 @@ RUN uv sync --frozen --no-dev
 
 COPY artifact/ artifact/
 
+COPY .dvc/config .dvc/config
+COPY datasets/*.dvc datasets/
+RUN uv run --no-sync dvc config --local core.no_scm true
+
 EXPOSE 8000
 CMD ["uv", "run", "--no-sync", "uvicorn", "amr_prediction.service.app:app", "--host", "0.0.0.0", "--port", "8000"]
