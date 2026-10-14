@@ -95,6 +95,9 @@ jobs:
           kubectl apply -f k8s/
           kubectl set image deploy/amr-prediction-service api="$IMAGE"
           kubectl rollout status deploy/amr-prediction-service --timeout=180s
+      - name: мониторинг
+        run: |
+          kubectl apply -f k8s/monitoring/
       - name: smoke
         # через Ingress, как ходят пользователи: из сети kind узел виден по имени, Traefik слушает NodePort 30080
         run: |
@@ -110,6 +113,8 @@ jobs:
           RID=$(jq -r .request_id pred.json)
           kubectl exec deploy/postgres -- psql -U postgres -d amr_prediction \
             -tAc "SELECT count(*) FROM predictions WHERE request_id = '$RID'" | grep -qx 1
+          curl --fail -sS -H "$H" $U/metrics > metrics.txt
+          grep -q '^amr_model_info{version="amr_prediction-v' metrics.txt
       - name: диагностика
         if: failure()
         run: |
