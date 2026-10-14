@@ -2,10 +2,13 @@ apiVersion: v1
 kind: Service
 metadata:
   name: amr-prediction-service
+  labels:
+    app: amr_prediction
 spec:
   type: ClusterIP
   selector:
     app: amr_prediction
   ports:
-    - port: 80
+    - name: http
+      port: 80
       targetPort: 8000
