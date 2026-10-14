@@ -2,7 +2,7 @@
 
 Трекинг изменений проекта. Формат: [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии: [SemVer](https://semver.org/lang/ru/).
 
-## [Unreleased] - платформа одной командой и мониторинг сервиса
+## [Unreleased] - платформа одной командой, мониторинг сервиса, данные в S3 кластера
 
 Платформа поднимается одним скриптом [`platform/up.sh`](platform/up.sh): кластер kind, Traefik, MLflow, Airflow, S3 на RustFS, Prometheus и Grafana, metrics-server. Сервис отдаёт метрики запросов и модели, Prometheus забирает их с каждого пода, Grafana показывает дашборд:
 
@@ -21,6 +21,7 @@
 | Метрики сервиса и модели, дашборд | [дашборд под трафиком](#дашборд-под-трафиком) |
 | Деплой с мониторингом, smoke по метрике версии модели | [зелёный прогон](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/38561348804), [деплой](#деплой-с-мониторингом) |
 | Бакеты задержки по серверному времени | [инцидент 1](#1-задержка-на-дашборде-втрое-выше-чем-у-клиента) |
+| Данные DVC в S3 кластера, в образе только указатели | [данные в S3](#данные-в-s3-кластера) |
 
 #### Деплой с мониторингом
 
@@ -40,6 +41,51 @@ Runner пересоздан перед деплоем: контейнер `gh-ru
 - предсказания по классам: `beta_lactam` около 35%, `bacitracin` около 27%, остальные 5 классов по 2-13%;
 - уверенность: из около 2 000 предсказаний за 15 минут 1 712 в бакете 0.9-1.0, ниже 0.2 - ни одного; ниже 1/7 ≈ 0.14 значений быть не может: это вероятность самого вероятного из 7 классов.
 
+#### Данные в S3 кластера
+
+Указатель в git - [`datasets/dataset.csv.dvc`](datasets/dataset.csv.dvc), версия данных v2 (`md5: fbb751c61c3de006a7ffe188e3d84ddb`). Хранилище - бакет `dvc` в RustFS ([`.dvc/config`](.dvc/config)), два remote на один бакет:
+
+```
+laptop  (по умолчанию)  dvc на ноутбуке → http://s3.localhost → 127.0.0.1:80 → Traefik → Service rustfs:9000
+cluster                 под в кластере   → http://rustfs.mlops:9000 (DNS Service внутри кластера)
+```
+
+После `dvc push` кэш и бакет совпадают:
+
+```
+$ uv run dvc status -c
+Cache and remote 'laptop' are in sync.
+```
+
+Файл в бакете лежит по md5: папка `files/md5/fb/`, имя - остаток хэша, 5.7 MiB:
+
+![s3-bucket](docs/screenshots/s3-bucket.png)
+
+Образ, собранный из этой ветки: в `datasets` только указатель, в `.dvc/config.local` только `no_scm`, ключей S3 в образе нет:
+
+```
+$ docker run --rm amr-prediction-service:dvc ls -a datasets .dvc
+.dvc:
+.
+..
+config
+config.local
+
+datasets:
+.
+..
+dataset.csv.dvc
+$ docker run --rm amr-prediction-service:dvc cat .dvc/config.local
+[core]
+    no_scm = true
+$ docker run --rm amr-prediction-service:dvc uv run --no-sync dvc version
+DVC version: 3.67.1 (pip)
+Supports:
+	s3 (s3fs = 2026.9.0)
+```
+
+Версия данных в прогоне MLflow: у версии модели 5 параметр `data_md5` `fbb751c61c3de006a7ffe188e3d84ddb` совпадает с md5 в `.dvc`-файле, см. [сравнение прогонов](#версии-данных-в-dvc).
+
 ### Добавлено
 
 - `platform/up.sh`: кластер `mlops` (имя меняется через `CLUSTER`), предзагрузка образов в узел, Secret `s3-credentials`, MLflow, RustFS, Airflow, Traefik, kube-prometheus-stack, metrics-server, Ingress, бакет `dvc`; повторный запуск только обновляет; если бакет не создан за 60 с, скрипт завершается с ошибкой - [`platform/up.sh`](platform/up.sh)
@@ -54,11 +100,16 @@ Runner пересоздан перед деплоем: контейнер `gh-ru
 - Дашборд Grafana: версия модели в подах, запросы за 5 минут, рестарты контейнеров, запросы в секунду по ручке и коду, задержка p50/p95, доля предсказаний по классам, распределение уверенности - [`k8s/monitoring/dashboard.yaml`](k8s/monitoring/dashboard.yaml)
 - `preStop` с паузой 5 с перед остановкой контейнера - [`k8s/deployment.yaml`](k8s/deployment.yaml)
 - Генератор трафика через Ingress: последовательности из датасета, отфильтрованные теми же правилами, что вход сервиса; `--bad` - доля заведомо плохих запросов - [`scripts/traffic.py`](scripts/traffic.py)
+- Remotes DVC `laptop` (`http://s3.localhost`) и `cluster` (`http://rustfs.mlops:9000`) на бакет `dvc`, ключи только в `.dvc/config.local` - [`.dvc/config`](.dvc/config)
+- В образе указатели на данные без самих данных: `COPY .dvc/config`, `COPY datasets/*.dvc`, `dvc config --local core.no_scm true`. В образе нет `.git`, и без `no_scm` `dvc pull` в поде падает. `.dockerignore` не пускает в контекст сборки `.dvc/cache/`, `.dvc/tmp/`, `.dvc/config.local`, `datasets/*.csv`, `datasets/*.parquet`, а также `dags/`, `platform/`, `scripts/` - [`Dockerfile`](Dockerfile), [`.dockerignore`](.dockerignore)
 - CI: шаг `мониторинг` применяет `k8s/monitoring/`; smoke проверяет `amr_model_info{version="amr_prediction-v…"}` в `/metrics`. Не счётчик запросов: `/metrics` через Ingress отвечает случайный под, а POST перед этим мог уйти в другой, и счётчика `/v1/predict` в этом поде ещё нет. `amr_model_info` выставляется при старте в каждом поде и заодно подтверждает, что модель из реестра
 
 ### Изменено
 
 - Service: порт назван `http`, у самого Service метка `app: amr_prediction` - по ним его находит ServiceMonitor
+- Хранилище DVC: папка `../dvc-storage` рядом с репозиторием → бакет `dvc` в RustFS кластера
+- `dvc` перенесён из dev-зависимостей в зависимости сервиса как `dvc[s3]`: `dvc pull` выполняется в поде из образа сервиса. Образ вырос с 919 MB до 1.15 GB
+- README: remotes DVC, ключи в `.dvc/config.local`, порядок `dvc push` → `git push`
 - README: адреса интерфейсов, запуск платформы через `up.sh`, регистрация runner, мониторинг; убран запуск в отдельном кластере `amr` через port-forward: с `MODEL_NAME` в ConfigMap он требует MLflow и без платформы не стартует
 
 ### Инциденты
@@ -71,6 +122,18 @@ Runner пересоздан перед деплоем: контейнер `gh-ru
 - **Исправление:** бакеты подобраны вокруг серверного времени - [PR #38](https://github.com/NorthMarshmallo/ML_service_demo/pull/38). Клиенту запись в базу не мешает: ответ уходит до неё. Сократить саму запись можно пулом соединений (`psycopg_pool`), тогда серверное время упадёт примерно до времени модели.
 
 ### Вопросы и решения
+
+**1. Код и данные версии N модели.** MLflow → Model registry → `amr_prediction` → версия N → Source run. Для восстановления нужны два поля прогона. Тег `mlflow.source.git.commit` MLflow пишет сам, если обучение запущено из git-репозитория. Параметр `data_md5` пишет `train.py`. У версии 5: коммит `f32a35f`, `data_md5` `fbb751c61c3de006a7ffe188e3d84ddb`.
+
+```bash
+git switch --detach f32a35f      # код, uv.lock, datasets/dataset.csv.dvc и .dvc/config этого коммита
+uv run dvc pull                  # файл с md5 из .dvc-файла, из бакета dvc
+md5sum datasets/dataset.csv      # совпадает с data_md5
+```
+
+Из git нужны код, `uv.lock` (версии библиотек), `datasets/dataset.csv.dvc` (md5 данных) и `.dvc/config` (адрес хранилища). `data_md5` нужен для сверки: тег коммита показывает только HEAD, а незакоммиченные правки в данных или коде в нём не видны. В версии 0.3.0 коммит искался через `git log -S <md5>`, тег делает это напрямую. Упрощение: в образе нет `.git`, поэтому прогон, запущенный в поде из образа, этот тег не получает.
+
+**2. Почему в образе указатели, а не данные, и что будет при `git push` раньше `dvc push`.** Образ - это код сервиса, и он один для любой версии данных. Если положить CSV в образ, новая версия данных потребует пересборки, а копия данных останется в каждом теге ghcr. Сервису для ответов данные вообще не нужны. Указатели в образе нужны поду обучения из того же образа: `.dvc`-файл задаёт md5, `.dvc/config` - remote `cluster`, а `dvc pull -r cluster` скачивает из бакета ровно ту версию, которая записана в коммите образа. Если сделать `git push` раньше `dvc push`, в `main` и в образ попадёт md5, которого нет в бакете. Сервис продолжит отвечать, но `dvc pull` в поде обучения упадёт, и это будет видно в логе задачи в Airflow. На ноутбуке это видно до push: `uv run dvc status -c` показывает `new: datasets/dataset.csv`, пока файл не отправлен в бакет.
 
 **6. Слои дашборда и почему в метках нет `request_id`.** Инфраструктуру на дашборде представляет одна панель - рестарты контейнеров (`kube_pod_container_status_restarts_total` из kube-state-metrics). CPU и память подов можно увидеть через `kubectl top pods`, по ним же масштабирует HPA. Слой сервиса - запросы в секунду по ручке и коду ответа, запросы за 5 минут, задержка p50 и p95: их даёт instrumentator, и для любого HTTP-API они выглядели бы так же. Слой модели - версия в подах, доля предсказаний по классам и распределение уверенности. Только по этим панелям видно, что поменялась сама модель или её ответы: сервис может отвечать 200 на каждый запрос и при этом предсказывать не то.
 

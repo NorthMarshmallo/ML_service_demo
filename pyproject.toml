@@ -17,6 +17,7 @@ dependencies = [
     "skops>=0.16",
     "prometheus-client>=0.21",
     "prometheus-fastapi-instrumentator>=8",
+    "dvc[s3]>=3.67.1",
 ]
 
 [dependency-groups]
@@ -27,7 +28,6 @@ dev = [
     "ruff",
     "httpx2>=2.13.1",
     "matplotlib>=3.11.2",
-    "dvc>=3.67.1",
 ]
 
 [build-system]
