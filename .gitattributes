@@ -1,0 +1,2 @@
+# shell-скрипты всегда с LF: иначе на Windows git добавит \r, и bash упадёт на "$'\r': command not found"
+*.sh text eol=lf
