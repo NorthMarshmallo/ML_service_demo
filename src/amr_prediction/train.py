@@ -1,4 +1,4 @@
-"""Обучение модели AMR: проверка данных, обучение, запись в MLflow, регистрация и гейт.
+"""Обучение модели AMR: чистка данных (amr_prediction.data), обучение, запись в MLflow, регистрация и гейт.
 
   MLFLOW_TRACKING_URI=http://mlflow.localhost uv run python -m amr_prediction.train
 
@@ -8,7 +8,6 @@ macro F1 на отложенной выборке лучше, чем у теку
 import hashlib
 import json
 import os
-from pathlib import Path
 
 import mlflow
 import numpy as np
@@ -22,7 +21,8 @@ from sklearn.model_selection import train_test_split
 from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import Pipeline
 
-DATA_PATH = Path(os.getenv("DATA_PATH", "datasets/dataset.csv"))
+from amr_prediction.data import CLASSES, DATA_PATH, FEATURES, TARGET, clean
+
 MODEL_NAME = os.getenv("MODEL_NAME", "amr_prediction")
 EXPERIMENT = os.getenv("MLFLOW_EXPERIMENT", "amr_prediction")
 HIDDEN_DIM = int(os.getenv("HIDDEN_DIM", "256"))
@@ -30,43 +30,6 @@ MIN_GAIN = float(os.getenv("GATE_MIN_GAIN", "0.005"))
 SEED = 42
 NUM_EPOCHS = 20
 SKOPS_TRUSTED = ["sklearn.neural_network._stochastic_optimizers.AdamOptimizer"]
-
-FEATURES = ["sequence"]
-TARGET = "antibiotic_class"
-# классы, которые предсказывает модель: 7 самых частых в исходном датасете (90% записей)
-CLASSES = ["aminoglycoside", "bacitracin", "beta_lactam", "chloramphenicol",
-           "macrolide-lincosamide-streptogramin", "multidrug", "polymyxin"]
-MIN_PER_CLASS = 100
-MIN_LENGTH = 20
-STANDARD_AA = "RHKDESTNQCGPAILMFWYV"
-
-
-def load_and_validate(path: Path) -> tuple[pd.DataFrame, dict]:
-    df = pd.read_csv(path, sep=";")
-    missing = set(FEATURES + [TARGET]) - set(df.columns)
-    if missing:
-        raise ValueError(f"в данных нет колонок: {sorted(missing)}")
-    if len(df) < 1000:
-        raise ValueError(f"слишком мало строк: {len(df)}")
-
-    # сколько строк отброшено на каждом фильтре, пишется в MLflow
-    dropped = {}
-    n = len(df)
-    df = df[df[TARGET].isin(CLASSES)]
-    dropped["dropped_other_classes"] = n - len(df)
-    n = len(df)
-    # те же правила, что у входа сервиса: только стандартные аминокислоты и длина от 20
-    df = df[df["sequence"].str.fullmatch(f"[{STANDARD_AA}]+") & (df["sequence"].str.len() >= MIN_LENGTH)]
-    dropped["dropped_bad_sequence"] = n - len(df)
-    n = len(df)
-    df = df.drop_duplicates(subset="sequence")
-    dropped["dropped_duplicates"] = n - len(df)
-
-    counts = df[TARGET].value_counts()
-    small = {cls: int(counts.get(cls, 0)) for cls in CLASSES if counts.get(cls, 0) < MIN_PER_CLASS}
-    if small:
-        raise ValueError(f"в классах меньше {MIN_PER_CLASS} примеров: {small}")
-    return df, dropped
 
 
 def upsample(x, y: np.ndarray) -> tuple:
@@ -121,7 +84,7 @@ def promote(client: MlflowClient, version: str, f1: float) -> tuple[str | None, 
 
 
 def main() -> dict:
-    df, dropped = load_and_validate(DATA_PATH)
+    df, dropped = clean(DATA_PATH)
     x_train, x_test, y_train, y_test = train_test_split(
         df[FEATURES], df[TARGET], test_size=0.2, stratify=df[TARGET], random_state=SEED)
 
