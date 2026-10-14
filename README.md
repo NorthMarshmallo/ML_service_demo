@@ -143,11 +143,19 @@ MLFLOW_TRACKING_URI=http://mlflow.localhost uv run python -m amr_prediction.trai
 
 **Данные (DVC)**
 
-Датасет `datasets/dataset.csv` хранится в DVC, в git - только `datasets/dataset.csv.dvc`.
+Датасет `datasets/dataset.csv` хранится в DVC, в git - только `datasets/dataset.csv.dvc`. Хранилище - бакет `dvc` в RustFS внутри кластера, два remote на один бакет:
+
+| Remote | Адрес | Откуда |
+|---|---|---|
+| `laptop` (по умолчанию) | `http://s3.localhost` → Traefik → `rustfs:9000` | с ноутбука |
+| `cluster` | `http://rustfs.mlops:9000` | из подов кластера |
 
 ```bash
+uv run dvc remote modify --local laptop access_key_id dvcadmin
+uv run dvc remote modify --local laptop secret_access_key dvc-secret-123
 uv run dvc pull                                  # скачать версию данных из текущего коммита
 git checkout <коммит> -- datasets/dataset.csv.dvc && uv run dvc checkout   # данные другой версии
+uv run dvc add datasets/dataset.csv && uv run dvc push    # новая версия данных, до git push
 ```
 
 **Деплой**
@@ -197,7 +205,7 @@ HPA ([`k8s/hpa.yaml`](k8s/hpa.yaml)) применяется вместе с `k8s
 src/amr_prediction/   код сервиса (API, метрики, настройки, работа с БД) и обучения
 artifact/             бандл модели для запуска без MLflow
 experiments/          ноутбук исследования
-datasets/             датасет под DVC (в git только .dvc-файл)
+datasets/             датасет под DVC (в git и в образе только .dvc-файл)
 tests/                unit- и интеграционные тесты
 k8s/                  манифесты сервиса и Postgres, HPA
 k8s/monitoring/       ServiceMonitor и дашборд Grafana
@@ -218,6 +226,7 @@ scripts/              генератор трафика
 - [x] HPA по CPU, нагрузка locust через Ingress
 - [x] Платформа одной командой: Traefik, MLflow, Airflow, RustFS, Prometheus, Grafana
 - [x] Метрики сервиса и модели, дашборд Grafana, smoke по метрике версии модели
+- [x] Данные DVC в S3 кластера, в образе только указатели
 
 ## История изменений
 
