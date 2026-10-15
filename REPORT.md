@@ -22,6 +22,7 @@
 | Деплой с мониторингом, smoke по метрике версии модели | [зелёный прогон](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/38561348804), [деплой](#деплой-с-мониторингом) |
 | Бакеты задержки по серверному времени | [инцидент 1](#1-задержка-на-дашборде-втрое-выше-чем-у-клиента) |
 | Данные DVC в S3 кластера, в образе только указатели | [данные в S3](#данные-в-s3-кластера) |
+| Quickstart: от `git clone` до ответа через Ingress за 17 минут | [подъём с нуля](#подъём-с-нуля-по-quickstart), [деплой](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/38769319100) |
 | Проверка данных схемами pandera, тесты в CI | [проверка данных](#проверка-данных), [зелёный tests](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/38598402121/job/115970980320?pr=41) |
 | DAG переобучения: validate, train, promoted, rollout; DAG и образ выставляет CI | [деплой](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/38725755522), [новая версия лучше](#переобучение-новая-версия-лучше), [новая версия хуже](#переобучение-новая-версия-хуже), [испорченная выгрузка и откат](#переобучение-испорченная-выгрузка) |
 
@@ -237,6 +238,42 @@ amr-prediction-service-5cbbc96c68-w8ngd   1/1     Running   0             37m
 
 ![dag-revert](docs/screenshots/dag-revert.png)
 
+#### Подъём с нуля по Quickstart
+
+`docker rm -f gh-runner`, `kind delete cluster --name mlops`, клон `main` в новую папку без `.dvc/config.local`, кэша DVC и `.venv`, дальше команды [Quickstart](README.md#quickstart) по порядку. Кластер создан в 19:18, ответ сервиса через Ingress - в 19:35: **проект поднимается с нуля за 17 минут**, из них около 6 минут - деплой. Первый запуск `deploy` упал на `docker login` по таймауту к ghcr.io ([инцидент 4](#4-деплой-с-нуля-docker-login-не-дождался-ghcrio)), повтор джобы - [зелёный](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/38769319100).
+
+```
+$ curl http://amr.localhost/health
+{"status":"ok","model_version":"amr_prediction-v1","model_source":"models:/amr_prediction@champion"}
+$ curl -X POST http://amr.localhost/v1/predict -H "Content-Type: application/json" -d @good.json
+{"score":0.9991741351964152,"antibiotic_class":"aminoglycoside","model_version":"amr_prediction-v1","request_id":"d9847688-d169-44b1-8166-b0f104659f0e","latency_ms":1.48}
+$ kubectl get pods -A
+NAMESPACE            NAME                                                  READY   STATUS    RESTARTS   AGE
+default              amr-prediction-service-5bc85664cf-8lnqc               1/1     Running   0          49s
+default              amr-prediction-service-5bc85664cf-wntt6               1/1     Running   0          44s
+default              postgres-6c476f4fd8-vmjdc                             1/1     Running   0          69s
+kube-system          coredns-559f6c778d-2mpq8                              1/1     Running   0          16m
+kube-system          coredns-559f6c778d-7l5mb                              1/1     Running   0          16m
+kube-system          etcd-mlops-control-plane                              1/1     Running   0          17m
+kube-system          kindnet-58w8l                                         1/1     Running   0          16m
+kube-system          kube-apiserver-mlops-control-plane                    1/1     Running   0          17m
+kube-system          kube-controller-manager-mlops-control-plane           1/1     Running   0          17m
+kube-system          kube-proxy-bvjdq                                      1/1     Running   0          16m
+kube-system          kube-scheduler-mlops-control-plane                    1/1     Running   0          17m
+kube-system          metrics-server-995d47bd7-cdhr8                        1/1     Running   0          15m
+local-path-storage   local-path-provisioner-75f7fc7dc5-zr6n7               1/1     Running   0          16m
+mlops                airflow-57889786d6-4mw56                              1/1     Running   0          16m
+mlops                mlflow-9f98c4469-2drps                                1/1     Running   0          16m
+mlops                rustfs-7bcddbcbfd-l725v                               1/1     Running   0          16m
+monitoring           monitoring-grafana-8694d54467-s5cd9                   3/3     Running   0          15m
+monitoring           monitoring-kube-prometheus-operator-55c8d7b6d-fbfgr   1/1     Running   0          15m
+monitoring           monitoring-kube-state-metrics-78fd56fc4b-qznpr        1/1     Running   0          15m
+monitoring           prometheus-monitoring-kube-prometheus-prometheus-0    2/2     Running   0          15m
+traefik              traefik-6d9c545874-kkm9d                              1/1     Running   0          16m
+```
+
+Данные в свежем клоне берутся из релиза [`data-v2`](https://github.com/NorthMarshmallo/ML_service_demo/releases/tag/data-v2): в git и в образе их нет, релиз играет роль источника выгрузки. md5 файла из релиза совпадает с `datasets/dataset.csv.dvc`, поэтому `dvc add` указатель не меняет, а `dvc push` кладёт ту же версию в бакет нового кластера.
+
 ### Добавлено
 
 - `platform/up.sh`: кластер `mlops` (имя меняется через `CLUSTER`), предзагрузка образов в узел, Secret `s3-credentials`, MLflow, RustFS, Airflow, Traefik, kube-prometheus-stack, metrics-server, Ingress, бакет `dvc`; повторный запуск только обновляет; если бакет не создан за 60 с, скрипт завершается с ошибкой - [`platform/up.sh`](platform/up.sh)
@@ -258,6 +295,7 @@ amr-prediction-service-5cbbc96c68-w8ngd   1/1     Running   0             37m
 - `train.py` пишет результат в `/airflow/xcom/return.json`, если папка есть, и тег `mlflow.source.git.commit` из `GIT_COMMIT`: в поде нет `.git`, DAG берёт коммит из тега образа `sha-<коммит>` - [`train.py`](src/amr_prediction/train.py)
 - CI: шаг `мониторинг и DAG` - ConfigMap `airflow-dags` из `dags/amr_retrain.py` и переменная Airflow `amr_image` с образом этого деплоя - [`ci.yml`](.github/workflows/ci.yml)
 - Испорченная выгрузка для проверки validate: класс `multidrug` переименован в `multi-drug` - [`scripts/break_export.py`](scripts/break_export.py)
+- README: Quickstart от `git clone` до ответа через Ingress; выгрузка v2 в релизе `data-v2` - [README](README.md#quickstart)
 - CI: шаг `мониторинг` применяет `k8s/monitoring/`; smoke проверяет `amr_model_info{version="amr_prediction-v…"}` в `/metrics`. Не счётчик запросов: `/metrics` через Ingress отвечает случайный под, а POST перед этим мог уйти в другой, и счётчика `/v1/predict` в этом поде ещё нет. `amr_model_info` выставляется при старте в каждом поде и заодно подтверждает, что модель из реестра
 
 ### Изменено
@@ -295,6 +333,13 @@ amr-prediction-service-5cbbc96c68-w8ngd   1/1     Running   0             37m
 - **Диагностика:** `airflow variables list` показывает `amr_image`, а `airflow variables get amr_image` - `does not exist`. В `variable` в SQLite строка есть, `is_encrypted` = 1. История запусков на месте: база на PVC `airflow-data`. `/opt/airflow/airflow.cfg` создан в 14:26, в момент перезапуска контейнеров после переноса Docker ([инцидент 2](#2-grafana-не-пускает-после-входа)).
 - **Причина:** `airflow standalone` без заданного `fernet_key` генерирует ключ и пишет его в `airflow.cfg` в слое контейнера. При перезапуске kubelet создаёт новый контейнер, слой пустой, ключ генерируется заново. Переменная зашифрована старым ключом, расшифровать её нельзя, и Airflow отвечает «не найдена».
 - **Исправление:** ключ хранится в Secret `airflow-fernet`, его один раз создаёт `platform/up.sh`, под получает его как `AIRFLOW__CORE__FERNET_KEY`. Старый ключ не восстановить, поэтому переменная записана заново.
+
+#### 4. Деплой с нуля: `docker login` не дождался ghcr.io
+
+- **Симптом:** при проверке Quickstart первый запуск `deploy` красный на `docker/login-action`, остальные шаги пропущены. `tests` и `build` зелёные.
+- **Диагностика:** в `_diag/Worker_*.log` раннера - `Get "https://ghcr.io/token?...": context deadline exceeded (Client.Timeout exceeded while awaiting headers)`. Через несколько минут с хоста `curl` к `ghcr.io/token` отвечает за 0.5 с, `docker pull` из ghcr.io доходит до реестра; прокси у `dockerd` нет.
+- **Причина:** раннер логинится через Docker хоста, разовый таймаут сети от хоста до ghcr.io.
+- **Исправление:** Re-run failed jobs, вторая попытка того же прогона зелёная. Код не менялся.
 
 ### Вопросы и решения
 
