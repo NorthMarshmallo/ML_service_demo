@@ -8,6 +8,47 @@
 
 > Статус: в разработке - [Roadmap](#roadmap), история изменений - [REPORT.md](REPORT.md).
 
+## Quickstart
+
+Нужны `git`, `docker`, `kind`, `kubectl`, `helm`, `uv`; на Windows команды - в Git Bash. Деплой идёт из GitHub Actions, поэтому нужен свой экземпляр репозитория: Fork, затем в форке Actions → «I understand my workflows, go ahead and enable them» и Settings → Secrets and variables → Actions → New repository secret `DB_PASSWORD` с любым паролем для Postgres.
+
+```bash
+# 1. код и платформа: kind, Traefik, MLflow, Airflow, S3, Prometheus, Grafana, бакет dvc
+git clone https://github.com/<владелец>/ML_service_demo && cd ML_service_demo
+bash platform/up.sh
+
+# 2. данные: выгрузка v2 из релиза, md5 совпадает с datasets/dataset.csv.dvc, затем в бакет кластера
+curl -fL -o datasets/dataset.csv https://github.com/NorthMarshmallo/ML_service_demo/releases/download/data-v2/dataset.csv
+uv run dvc remote modify --local laptop access_key_id dvcadmin
+uv run dvc remote modify --local laptop secret_access_key dvc-secret-123
+uv run dvc add datasets/dataset.csv
+uv run dvc push
+
+# 3. первый champion в реестре MLflow: без него сервис не стартует
+MLFLOW_TRACKING_URI=http://mlflow.localhost uv run python -m amr_prediction.train
+
+# 4. runner для деплоя: токен - в форке Settings → Actions → Runners → New self-hosted runner, действует час
+export RUNNER_TOKEN=<токен>
+docker run -d --name gh-runner --network kind --restart unless-stopped \
+  --group-add "$(stat -c %g /var/run/docker.sock)" \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -e REPO_URL=https://github.com/<владелец>/ML_service_demo -e RUNNER_TOKEN \
+  ghcr.io/actions/actions-runner:2.337.0 \
+  bash -c '[ -f .runner ] || ./config.sh --unattended --replace --url "$REPO_URL" --token "$RUNNER_TOKEN" --name mlops-kind --labels kind; ./run.sh'
+docker logs -f gh-runner     # ждать "Listening for Jobs", Ctrl+C
+```
+
+5. В форке Actions → ci → Run workflow → main, дождаться зелёного `deploy` (5-10 минут).
+
+```bash
+# 6. ответ сервиса через Ingress
+curl http://amr.localhost/health
+curl -X POST http://amr.localhost/v1/predict -H "Content-Type: application/json" -d @good.json
+kubectl get pods -A
+```
+
+Если Python не находит `*.localhost` (`getaddrinfo failed` на шаге 2 или 3), в hosts нужна строка `127.0.0.1 mlflow.localhost s3.localhost amr.localhost`. На Docker Desktop в шаге 4 вместо `$(stat ...)` - `0`.
+
 ## Интерфейсы
 
 | Что | Адрес | Вход |
