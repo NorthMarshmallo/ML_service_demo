@@ -209,6 +209,7 @@ Airflow (под airflow, mlops) ── POST pod ──► под amr-validate (�
 - Проверки «меньше 1000 строк» и «меньше 100 примеров в классе» в `train.py` заменены проверками объёма и долей классов в схеме выгрузки
 - `matplotlib` перенесён из dev-зависимостей в зависимости сервиса: `train.py` рисует им матрицу ошибок, а образ собирается с `--no-dev`, и в поде train обучение падало бы на импорте
 - Деплой после `kind load` удаляет с хоста образы сервиса, кроме текущего
+- Ключ шифрования Airflow в Secret `airflow-fernet` вместо генерации при старте пода
 - README: адреса интерфейсов, запуск платформы через `up.sh`, регистрация runner, мониторинг; убран запуск в отдельном кластере `amr` через port-forward: с `MODEL_NAME` в ConfigMap он требует MLflow и без платформы не стартует
 
 ### Инциденты
@@ -226,6 +227,13 @@ Airflow (под airflow, mlops) ── POST pod ──► под amr-validate (�
 - **Диагностика:** в логе пода `database or disk is full (13)` и `token needs to be rotated`. `df -h /` - 92G, свободно 0. `docker system df`: образы 12.2 GB, тома 14.7 GB (в основном `/var` узла kind, из него 11 GB - образы в containerd узла), кэш сборки 2.9 GB. На хосте 7 образов сервиса `sha-*` по 0.9-1.3 GB, в узле kind - их копии.
 - **Причина:** деплой делает `docker pull` в Docker хоста (runner работает через его сокет), затем `kind load` копирует образ в узел. Старые версии не удалялись ни там, ни там. Сборщик образов kubelet в kind выключен, поэтому узел не чистил их сам и не сообщал `DiskPressure`. Grafana хранит сессии в SQLite и при полном диске не может записать новый токен.
 - **Исправление:** удалены старые образы `sha-*` на хосте и в узле (`crictl rmi --prune`), кэш сборки, остановленные контейнеры прошлых заданий. Данные Docker и containerd перенесены с `/` на `/home` (`data-root` в `/etc/docker/daemon.json`, `root` в `/etc/containerd/config.toml`). После `kind load` деплой удаляет с хоста образы сервиса, кроме текущего. На `/` свободно 29 GB.
+
+#### 3. После перезапуска узла DAG не видит переменную `amr_image`
+
+- **Симптом:** запуск `manual__2026-10-15T14:54:31` падает на `validate` до создания пода: `Exception rendering Jinja template for task 'validate', field 'image'`, `VARIABLE_NOT_FOUND: Variable amr_image not found`.
+- **Диагностика:** `airflow variables list` показывает `amr_image`, а `airflow variables get amr_image` - `does not exist`. В `variable` в SQLite строка есть, `is_encrypted` = 1. История запусков на месте: база на PVC `airflow-data`. `/opt/airflow/airflow.cfg` создан в 14:26, в момент перезапуска контейнеров после переноса Docker ([инцидент 2](#2-grafana-не-пускает-после-входа)).
+- **Причина:** `airflow standalone` без заданного `fernet_key` генерирует ключ и пишет его в `airflow.cfg` в слое контейнера. При перезапуске kubelet создаёт новый контейнер, слой пустой, ключ генерируется заново. Переменная зашифрована старым ключом, расшифровать её нельзя, и Airflow отвечает «не найдена».
+- **Исправление:** ключ хранится в Secret `airflow-fernet`, его один раз создаёт `platform/up.sh`, под получает его как `AIRFLOW__CORE__FERNET_KEY`. Старый ключ не восстановить, поэтому переменная записана заново.
 
 ### Вопросы и решения
 

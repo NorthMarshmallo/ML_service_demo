@@ -36,6 +36,9 @@ kubectl apply -f platform/mlflow.yaml
 kubectl -n mlops create secret generic s3-credentials \
   --from-literal=AWS_ACCESS_KEY_ID="$S3_KEY" --from-literal=AWS_SECRET_ACCESS_KEY="$S3_SECRET" \
   --dry-run=client -o yaml | kubectl apply -f -
+# ключ шифрования переменных Airflow создаётся один раз: с новым ключом старые переменные не читаются
+kubectl -n mlops get secret airflow-fernet >/dev/null 2>&1 || kubectl -n mlops create secret generic airflow-fernet \
+  --from-literal=AIRFLOW__CORE__FERNET_KEY="$(head -c 32 /dev/urandom | base64 | tr '+/' '-_')"
 kubectl apply -f platform/s3.yaml -f platform/airflow.yaml
 
 echo "== Traefik, Prometheus и Grafana"
