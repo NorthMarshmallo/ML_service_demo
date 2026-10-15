@@ -8,6 +8,7 @@ macro F1 на отложенной выборке лучше, чем у теку
 import hashlib
 import json
 import os
+from pathlib import Path
 
 import mlflow
 import numpy as np
@@ -30,6 +31,10 @@ MIN_GAIN = float(os.getenv("GATE_MIN_GAIN", "0.005"))
 SEED = 42
 NUM_EPOCHS = 20
 SKOPS_TRUSTED = ["sklearn.neural_network._stochastic_optimizers.AdamOptimizer"]
+# в поде из образа нет .git, и MLflow сам коммит не запишет; DAG передаёт его из тега образа sha-<коммит>
+GIT_COMMIT = os.getenv("GIT_COMMIT")
+# KubernetesPodOperator с do_xcom_push забирает результат задачи из этого файла
+XCOM_DIR = Path("/airflow/xcom")
 
 
 def upsample(x, y: np.ndarray) -> tuple:
@@ -94,6 +99,8 @@ def main() -> dict:
 
     mlflow.set_experiment(EXPERIMENT)
     with mlflow.start_run() as run:
+        if GIT_COMMIT:
+            mlflow.set_tag("mlflow.source.git.commit", GIT_COMMIT)
         metadata = {"features": FEATURES, "classes": list(pipeline.classes_), "n_train": len(x_train),
                     "data_rows": len(df), "sklearn": sklearn.__version__}
         mlflow.log_params({"hidden_dim": HIDDEN_DIM, "epochs": NUM_EPOCHS, "model": "MLPClassifier", "seed": SEED,
@@ -109,6 +116,8 @@ def main() -> dict:
     result = {"run_id": run.info.run_id, "version": version, "macro_f1": round(f1, 4),
               "champion_before": old_version, "champion_f1_before": old_f1, "promoted": promoted}
     print(json.dumps(result, ensure_ascii=False))
+    if XCOM_DIR.is_dir():
+        (XCOM_DIR / "return.json").write_text(json.dumps(result))
     return result
 
 

@@ -95,9 +95,13 @@ jobs:
           kubectl apply -f k8s/
           kubectl set image deploy/amr-prediction-service api="$IMAGE"
           kubectl rollout status deploy/amr-prediction-service --timeout=180s
-      - name: мониторинг
+      - name: мониторинг и DAG
         run: |
           kubectl apply -f k8s/monitoring/
+          kubectl -n mlops create configmap airflow-dags --from-file=dags/amr_retrain.py \
+            --dry-run=client -o yaml | kubectl apply -f -
+          # образ этого деплоя для подов validate и train; узел уже получил его через kind load
+          kubectl -n mlops exec deploy/airflow -- airflow variables set amr_image "$IMAGE"
       - name: smoke
         # через Ingress, как ходят пользователи: из сети kind узел виден по имени, Traefik слушает NodePort 30080
         run: |
