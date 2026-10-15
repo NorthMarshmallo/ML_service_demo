@@ -19,6 +19,7 @@ dependencies = [
     "prometheus-fastapi-instrumentator>=8",
     "dvc[s3]>=3.67.1",
     "pandera>=0.34.1",
+    "matplotlib>=3.11.2",
 ]
 
 [dependency-groups]
@@ -28,7 +29,6 @@ dev = [
     "locust",
     "ruff",
     "httpx2>=2.13.1",
-    "matplotlib>=3.11.2",
 ]
 
 [build-system]
