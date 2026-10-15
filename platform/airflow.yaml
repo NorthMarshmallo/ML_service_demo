@@ -95,6 +95,9 @@ spec:
             # kubelet кладёт файлы ConfigMap в скрытую папку и ссылается на неё симлинком ..data;
             # если читать сам /opt/airflow/dags, Airflow видит одну папку дважды и падает
             - {name: AIRFLOW__CORE__DAGS_FOLDER, value: /opt/airflow/dags/..data}
+          # без него standalone генерирует ключ в airflow.cfg в слое контейнера, и после перезапуска пода он новый
+          envFrom:
+            - secretRef: {name: airflow-fernet}
           ports:
             - containerPort: 8080
           volumeMounts:
