@@ -60,7 +60,7 @@ curl -X POST http://amr.localhost/v1/predict -H "Content-Type: application/json"
                          ┌─ amr.localhost ──► Service amr-prediction-service :80 ─┬─► под api #1 :8000 ─┐
 127.0.0.1:80 ─► kind :30080 ─► Traefik ─┤                                                    └─► под api #2 :8000 ─┴─► postgres :5432
                          ├─ mlflow.localhost ──► MLflow :5000          ◄── поды api: models:/amr_prediction@champion
-                         ├─ airflow.localhost ─► Airflow :8080
+                         ├─ airflow.localhost ─► Airflow :8080 ─► поды validate/train (образ сервиса) ─► RustFS, MLflow
                          ├─ grafana.localhost ─► Grafana :80 ◄── Prometheus ◄── /metrics каждого пода api, раз в 15 с
                          └─ s3.localhost ──────► RustFS :9000 (бакет dvc)
 ```
@@ -91,7 +91,7 @@ push в main:  tests → build (образ в ghcr, тег sha-<коммит>), 
 Run workflow: tests → build → deploy на self-hosted runner в кластер mlops
 ```
 
-Шаги `deploy`: образ в узел kind → Secret → Postgres → `k8s/` → `k8s/monitoring/` → smoke через Ingress (`Host: amr.localhost` на `mlops-control-plane:30080`). Smoke проверяет версию из реестра в `/health`, класс и `score` на `good.json`, строку в базе с этим `request_id` и метрику `amr_model_info` в `/metrics`.
+Шаги `deploy`: образ в узел kind → Secret → Postgres → `k8s/` → `k8s/monitoring/`, ConfigMap с DAG и переменная Airflow `amr_image` → smoke через Ingress (`Host: amr.localhost` на `mlops-control-plane:30080`). Smoke проверяет версию из реестра в `/health`, класс и `score` на `good.json`, строку в базе с этим `request_id` и метрику `amr_model_info` в `/metrics`.
 
 ## Конфигурация
 
@@ -167,6 +167,17 @@ DATA_PATH=<другой файл> MLFLOW_TRACKING_URI=http://mlflow.localhost uv
 
 Схемы pandera - в [`data.py`](src/amr_prediction/data.py). Прогон в эксперименте `amr_prediction_data` с тегом `valid`; при нарушениях - артефакт `failure_cases.csv` и код выхода 1.
 
+**Переобучение (Airflow)**
+
+DAG [`amr_retrain`](dags/amr_retrain.py): `validate → train → promoted → rollout`, каждый день в 03:00 МСК. validate и train - поды из образа сервиса, данные - `dvc pull -r cluster`; rollout перезапускает сервис, если гейт отдал новой версии `champion`. DAG и образ выставляет CI при деплое; DAG появляется через 1-2 минуты после деплоя, в первый раз его нужно снять с паузы.
+
+Запуск руками: http://airflow.localhost → `amr_retrain` → Trigger, параметр `hidden_dim` (по умолчанию 256), или
+
+```bash
+kubectl -n mlops exec deploy/airflow -- airflow dags trigger amr_retrain -c '{"hidden_dim": 256}'
+kubectl -n mlops get pods -w      # поды amr-validate-..., amr-train-...
+```
+
 **Деплой**
 
 Job `deploy` выполняется на self-hosted runner в Docker-сети `kind`, рядом с кластером. Токен регистрации: Settings → Actions → Runners → New self-hosted runner.
@@ -219,7 +230,8 @@ tests/                unit- и интеграционные тесты
 k8s/                  манифесты сервиса и Postgres, HPA
 k8s/monitoring/       ServiceMonitor и дашборд Grafana
 platform/             кластер kind и платформа: up.sh, Traefik, MLflow, Airflow, RustFS, Prometheus/Grafana
-scripts/              генератор трафика
+scripts/              генератор трафика, испорченная выгрузка для проверки validate
+dags/                 DAG переобучения для Airflow
 .github/workflows/    CI/CD
 ```
 
@@ -237,6 +249,7 @@ scripts/              генератор трафика
 - [x] Метрики сервиса и модели, дашборд Grafana, smoke по метрике версии модели
 - [x] Данные DVC в S3 кластера, в образе только указатели
 - [x] Проверка данных схемами pandera, прогон validate в MLflow
+- [x] Переобучение по расписанию в Airflow: validate, train с гейтом, выкат
 
 ## История изменений
 

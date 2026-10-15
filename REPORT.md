@@ -2,7 +2,7 @@
 
 Трекинг изменений проекта. Формат: [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии: [SemVer](https://semver.org/lang/ru/).
 
-## [Unreleased] - платформа одной командой, мониторинг сервиса, данные в S3 кластера, проверка данных
+## [Unreleased] - платформа одной командой, мониторинг сервиса, данные в S3 кластера, проверка данных, переобучение в Airflow
 
 Платформа поднимается одним скриптом [`platform/up.sh`](platform/up.sh): кластер kind, Traefik, MLflow, Airflow, S3 на RustFS, Prometheus и Grafana, metrics-server. Сервис отдаёт метрики запросов и модели, Prometheus забирает их с каждого пода, Grafana показывает дашборд:
 
@@ -10,7 +10,7 @@
 поды api :8000/metrics ◄── Prometheus (ServiceMonitor, раз в 15 с) ◄── Grafana (дашборд из ConfigMap)
 ```
 
-Ветки: компоненты платформы - [PR #35](https://github.com/NorthMarshmallo/ML_service_demo/pull/35), `up.sh` - [PR #36](https://github.com/NorthMarshmallo/ML_service_demo/pull/36), метрики и дашборд - [PR #37](https://github.com/NorthMarshmallo/ML_service_demo/pull/37), бакеты задержки - [PR #38](https://github.com/NorthMarshmallo/ML_service_demo/pull/38), данные в S3 кластера - [PR #40](https://github.com/NorthMarshmallo/ML_service_demo/pull/40), проверка данных - [PR #41](https://github.com/NorthMarshmallo/ML_service_demo/pull/41).
+Ветки: компоненты платформы - [PR #35](https://github.com/NorthMarshmallo/ML_service_demo/pull/35), `up.sh` - [PR #36](https://github.com/NorthMarshmallo/ML_service_demo/pull/36), метрики и дашборд - [PR #37](https://github.com/NorthMarshmallo/ML_service_demo/pull/37), бакеты задержки - [PR #38](https://github.com/NorthMarshmallo/ML_service_demo/pull/38), данные в S3 кластера - [PR #40](https://github.com/NorthMarshmallo/ML_service_demo/pull/40), проверка данных - [PR #41](https://github.com/NorthMarshmallo/ML_service_demo/pull/41), переобучение в Airflow - [PR #42](https://github.com/NorthMarshmallo/ML_service_demo/pull/42).
 
 Разделение ответственности: `up.sh` ставит то, что не зависит от сервиса и меняется редко (платформа, один раз на кластер); CI выкатывает всё, что относится к сервису, на каждый деплой (`k8s/`, `k8s/monitoring/`).
 
@@ -23,6 +23,7 @@
 | Бакеты задержки по серверному времени | [инцидент 1](#1-задержка-на-дашборде-втрое-выше-чем-у-клиента) |
 | Данные DVC в S3 кластера, в образе только указатели | [данные в S3](#данные-в-s3-кластера) |
 | Проверка данных схемами pandera, тесты в CI | [проверка данных](#проверка-данных), [зелёный tests](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/38598402121/job/115970980320?pr=41) |
+| DAG переобучения: validate, train, promoted, rollout; DAG и образ выставляет CI | [деплой](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/38725755522), [новая версия лучше](#переобучение-новая-версия-лучше) |
 
 #### Деплой с мониторингом
 
@@ -127,6 +128,54 @@ exit 1
 
 Тесты [`tests/test_data.py`](tests/test_data.py) на 21 последовательности из `examples/`, без датасета: хорошие строки проходят, ДНК вместо белка поймана `composition_l1`, одна последовательность с двумя классами поймана уникальностью, маленькая выгрузка отвергнута. [Зелёный tests](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/38598402121/job/115970980320?pr=41).
 
+#### Переобучение: новая версия лучше
+
+DAG [`amr_retrain`](dags/amr_retrain.py), ConfigMap с ним и переменную `amr_image` выставил [деплой](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/38725755522) коммита `eb624f8` (шаг `мониторинг и DAG`). Путь одного запуска:
+
+```
+Airflow (под airflow, mlops) ── POST pod ──► под amr-validate (образ sha-eb624f8): dvc pull -r cluster ◄── rustfs.mlops:9000
+                                                                                 python -m amr_prediction.data ──► mlflow.mlops:5000
+                             ── POST pod ──► под amr-train (тот же образ):       dvc pull, python -m amr_prediction.train ──► MLflow: версия, алиасы
+                                             /airflow/xcom/return.json ── exec ──► promoted (в поде airflow) ──► rollout: PATCH deploy/amr-prediction-service
+```
+
+Подготовка: `champion` переставлен на версию 1 (macro F1 0.9256), поды сервиса перезапущены, `/health` - `amr_prediction-v1`. Затем `scripts/traffic.py --rps 5 --bad 0.05` через Ingress и Trigger DAG с `hidden_dim` 256.
+
+| Задача | Время (МСК) | Длительность |
+|---|---|---|
+| validate | 14:25:51-14:26:03 | 12 с |
+| train | 14:26:03-14:26:38 | 35 с |
+| promoted | 14:26:39 | < 1 с: версия 6, macro F1 0.9533 против 0.9256 у версии 1 → `True` |
+| rollout | 14:26:40 | < 1 с |
+
+![dag-promoted](docs/screenshots/dag-promoted.png)
+
+Переключение версии в подах по `sum by (version) (amr_model_info)` из Prometheus: в 14:26:55 по одному поду с v1 и v6, с 14:27:05 оба пода на v6. Образ деплоймента не менялся - `sha-eb624f8` до и после.
+
+![dashboard-rollout](docs/screenshots/dashboard-rollout.png)
+
+Тот же запрос в Explore с 14:10 до 14:40. До 14:22 champion - v4. В 14:22 подготовка: два перезапуска подряд, ряды двух наборов подов с v1 перекрываются на одной точке, отсюда 4. В 14:27 rollout из DAG: v1 обрывается, v6 начинается с одного пода и через 15 с выходит на 2.
+
+![model-version-switch](docs/screenshots/model-version-switch.png)
+
+На панели «Запросы в секунду» в 14:27 провал до ~3 запросов/с - это `rate()` на смене подов: ряды старых подов обрываются, у новых счётчики начинаются с нуля. Генератор в это время шёл ровно, по 50 запросов за 10-11 с. Вывод генератора с 14:22:40 до 14:30:20, выкат на 240-260 с: только 200 и намеренные 422 от `--bad`, ни одного 5xx и ни одной ошибки соединения (код 0):
+
+```
+200 запросов за 42 с, коды {200: 188, 422: 12}
+...
+1100 запросов за 229 с, коды {200: 1055, 422: 45}
+1150 запросов за 240 с, коды {200: 1102, 422: 48}
+1200 запросов за 250 с, коды {200: 1150, 422: 50}
+1250 запросов за 260 с, коды {200: 1200, 422: 50}
+1300 запросов за 271 с, коды {200: 1250, 422: 50}
+...
+2200 запросов за 459 с, коды {200: 2108, 422: 92}
+```
+
+Прогон train в MLflow: Source - `train.py` и коммит `eb624f8` из тега образа, версия 6 в реестре. Duration 1.6 с - прогон открывается после обучения, только для записи метрик и модели.
+
+![train-run-commit](docs/screenshots/train-run-commit.png)
+
 ### Добавлено
 
 - `platform/up.sh`: кластер `mlops` (имя меняется через `CLUSTER`), предзагрузка образов в узел, Secret `s3-credentials`, MLflow, RustFS, Airflow, Traefik, kube-prometheus-stack, metrics-server, Ingress, бакет `dvc`; повторный запуск только обновляет; если бакет не создан за 60 с, скрипт завершается с ошибкой - [`platform/up.sh`](platform/up.sh)
@@ -144,6 +193,10 @@ exit 1
 - Remotes DVC `laptop` (`http://s3.localhost`) и `cluster` (`http://rustfs.mlops:9000`) на бакет `dvc`, ключи только в `.dvc/config.local` - [`.dvc/config`](.dvc/config)
 - В образе указатели на данные без самих данных: `COPY .dvc/config`, `COPY datasets/*.dvc`, `dvc config --local core.no_scm true`. В образе нет `.git`, и без `no_scm` `dvc pull` в поде падает. `.dockerignore` не пускает в контекст сборки `.dvc/cache/`, `.dvc/tmp/`, `.dvc/config.local`, `datasets/*.csv`, `datasets/*.parquet`, а также `dags/`, `platform/`, `scripts/` - [`Dockerfile`](Dockerfile), [`.dockerignore`](.dockerignore)
 - Проверка данных: схемы pandera для строк и для выгрузки целиком, прогон `validate` в эксперименте `amr_prediction_data` с тегом `valid`, при нарушениях `failure_cases.csv` и код выхода 1; тесты схем без датасета - [`data.py`](src/amr_prediction/data.py), [`tests/test_data.py`](tests/test_data.py)
+- DAG `amr_retrain`: validate и train в подах из образа сервиса с `dvc pull -r cluster` и ключами из Secret `s3-credentials`, `promoted` через `short_circuit`, `rollout` перезапускает `amr-prediction-service`; расписание `CronTriggerTimetable` 03:00 МСК без `start_date`, параметр `hidden_dim` - [`dags/amr_retrain.py`](dags/amr_retrain.py)
+- `train.py` пишет результат в `/airflow/xcom/return.json`, если папка есть, и тег `mlflow.source.git.commit` из `GIT_COMMIT`: в поде нет `.git`, DAG берёт коммит из тега образа `sha-<коммит>` - [`train.py`](src/amr_prediction/train.py)
+- CI: шаг `мониторинг и DAG` - ConfigMap `airflow-dags` из `dags/amr_retrain.py` и переменная Airflow `amr_image` с образом этого деплоя - [`ci.yml`](.github/workflows/ci.yml)
+- Испорченная выгрузка для проверки validate: класс `multidrug` переименован в `multi-drug` - [`scripts/break_export.py`](scripts/break_export.py)
 - CI: шаг `мониторинг` применяет `k8s/monitoring/`; smoke проверяет `amr_model_info{version="amr_prediction-v…"}` в `/metrics`. Не счётчик запросов: `/metrics` через Ingress отвечает случайный под, а POST перед этим мог уйти в другой, и счётчика `/v1/predict` в этом поде ещё нет. `amr_model_info` выставляется при старте в каждом поде и заодно подтверждает, что модель из реестра
 
 ### Изменено
@@ -154,6 +207,8 @@ exit 1
 - README: remotes DVC, ключи в `.dvc/config.local`, порядок `dvc push` → `git push`, запуск проверки данных
 - Чистка данных перенесена из `train.py` в `data.py`. Убираются только полные дубли: раньше из пары «одна последовательность, два класса» молча оставалась первая строка
 - Проверки «меньше 1000 строк» и «меньше 100 примеров в классе» в `train.py` заменены проверками объёма и долей классов в схеме выгрузки
+- `matplotlib` перенесён из dev-зависимостей в зависимости сервиса: `train.py` рисует им матрицу ошибок, а образ собирается с `--no-dev`, и в поде train обучение падало бы на импорте
+- Деплой после `kind load` удаляет с хоста образы сервиса, кроме текущего
 - README: адреса интерфейсов, запуск платформы через `up.sh`, регистрация runner, мониторинг; убран запуск в отдельном кластере `amr` через port-forward: с `MODEL_NAME` в ConfigMap он требует MLflow и без платформы не стартует
 
 ### Инциденты
@@ -165,6 +220,13 @@ exit 1
 - **Причина:** строка в Postgres пишется фоновой задачей (`bg.add_task(db.save_prediction, ...)`). Starlette отправляет ответ клиенту, а потом выполняет фоновую задачу в том же вызове приложения, и instrumentator, который засекает время вокруг всего вызова, считает и её. `save_prediction` открывает новое соединение на каждый запрос - около 12 мс плюс INSERT. Бакеты были подобраны по клиентскому времени, поэтому почти все запросы попали в один бакет 20-30 мс, а p50 и p95 получались интерполяцией внутри широких бакетов.
 - **Исправление:** бакеты подобраны вокруг серверного времени - [PR #38](https://github.com/NorthMarshmallo/ML_service_demo/pull/38). Клиенту запись в базу не мешает: ответ уходит до неё. Сократить саму запись можно пулом соединений (`psycopg_pool`), тогда серверное время упадёт примерно до времени модели.
 
+#### 2. Grafana не пускает после входа
+
+- **Симптом:** после ввода пароля Grafana снова открывает `/login`.
+- **Диагностика:** в логе пода `database or disk is full (13)` и `token needs to be rotated`. `df -h /` - 92G, свободно 0. `docker system df`: образы 12.2 GB, тома 14.7 GB (в основном `/var` узла kind, из него 11 GB - образы в containerd узла), кэш сборки 2.9 GB. На хосте 7 образов сервиса `sha-*` по 0.9-1.3 GB, в узле kind - их копии.
+- **Причина:** деплой делает `docker pull` в Docker хоста (runner работает через его сокет), затем `kind load` копирует образ в узел. Старые версии не удалялись ни там, ни там. Сборщик образов kubelet в kind выключен, поэтому узел не чистил их сам и не сообщал `DiskPressure`. Grafana хранит сессии в SQLite и при полном диске не может записать новый токен.
+- **Исправление:** удалены старые образы `sha-*` на хосте и в узле (`crictl rmi --prune`), кэш сборки, остановленные контейнеры прошлых заданий. Данные Docker и containerd перенесены с `/` на `/home` (`data-root` в `/etc/docker/daemon.json`, `root` в `/etc/containerd/config.toml`). После `kind load` деплой удаляет с хоста образы сервиса, кроме текущего. На `/` свободно 29 GB.
+
 ### Вопросы и решения
 
 **1. Код и данные версии N модели.** MLflow → Model registry → `amr_prediction` → версия N → Source run. Для восстановления нужны два поля прогона. Тег `mlflow.source.git.commit` MLflow пишет сам, если обучение запущено из git-репозитория. Параметр `data_md5` пишет `train.py`. У версии 5: коммит `f32a35f`, `data_md5` `fbb751c61c3de006a7ffe188e3d84ddb`.
@@ -175,13 +237,15 @@ uv run dvc pull                  # файл с md5 из .dvc-файла, из б
 md5sum datasets/dataset.csv      # совпадает с data_md5
 ```
 
-Из git нужны код, `uv.lock` (версии библиотек), `datasets/dataset.csv.dvc` (md5 данных) и `.dvc/config` (адрес хранилища). `data_md5` нужен для сверки: тег коммита показывает только HEAD, а незакоммиченные правки в данных или коде в нём не видны. В версии 0.3.0 коммит искался через `git log -S <md5>`, тег делает это напрямую. Упрощение: в образе нет `.git`, поэтому прогон, запущенный в поде из образа, этот тег не получает.
+Из git нужны код, `uv.lock` (версии библиотек), `datasets/dataset.csv.dvc` (md5 данных) и `.dvc/config` (адрес хранилища). `data_md5` нужен для сверки: тег коммита показывает только HEAD, а незакоммиченные правки в данных или коде в нём не видны. В версии 0.3.0 коммит искался через `git log -S <md5>`, тег делает это напрямую. В поде Airflow `.git` нет, и тег выставляет сам `train.py` из коммита в теге образа: у версии 6 - `eb624f8`.
 
 **2. Почему в образе указатели, а не данные, и что будет при `git push` раньше `dvc push`.** Образ - это код сервиса, и он один для любой версии данных. Если положить CSV в образ, новая версия данных потребует пересборки, а копия данных останется в каждом теге ghcr. Сервису для ответов данные вообще не нужны. Указатели в образе нужны поду обучения из того же образа: `.dvc`-файл задаёт md5, `.dvc/config` - remote `cluster`, а `dvc pull -r cluster` скачивает из бакета ровно ту версию, которая записана в коммите образа. Если сделать `git push` раньше `dvc push`, в `main` и в образ попадёт md5, которого нет в бакете. Сервис продолжит отвечать, но `dvc pull` в поде обучения упадёт, и это будет видно в логе задачи в Airflow. На ноутбуке это видно до push: `uv run dvc status -c` показывает `new: datasets/dataset.csv`, пока файл не отправлен в бакет.
 
 **3. Бинарные проверки и проверки с порогом.** Бинарные: алфавит из 20 аминокислот, длина от 20, класс из `CLASSES`, уникальность `sequence`, отсутствие лишних колонок - правило либо выполнено, либо нет, и оно не зависит от данных. С порогом: длина до 2000, расстояние состава < 1.0, объём ≥ 12 000, медиана длины 200-400, доли классов в 1.5 раза от v2. Пороги взяты по распределению v2 так, чтобы между нормальными данными и поломкой был разрыв: максимум L1 у белков 0.70, у ДНК 1.5. Слишком строгий порог останавливает честную новую версию базы, например с выросшей долей бета-лактамаз: `validate` красный, модель не переобучается, пока человек не посмотрит `failure_cases.csv` и не сдвинет порог коммитом.
 
 **4. pandera в конвейере и Pydantic в сервисе.** Pydantic-схема `Features` в `app.py` проверяет один запрос в момент вызова: тот же алфавит и длину от 20, и отвечает клиенту 422. Распределения она не видит. pandera проверяет всю выгрузку до обучения: кроме правил для строк - объём, медиану длины, доли классов и состав, результат пишет в MLflow и останавливает конвейер. Pydantic защищает работающую модель от плохого входа, pandera - будущую модель от плохих обучающих данных. Общие правила (алфавит, длина от 20) одинаковые в обеих схемах, иначе модель обучалась бы на том, что сервис не принимает, или наоборот.
+
+**5. Обучение в отдельном поде и выкат без пересборки образа.** В образе `apache/airflow` нет ни sklearn, ни pandera, ни кода модели, а в образе сервиса есть всё это в версиях из `uv.lock`, и тот же `clean()`, что и у модели в проде. Под обучения запускается с другой командой вместо uvicorn, после задачи удаляется, и его память и CPU не делят ресурсы с Airflow. Чего-то не хватает в образе - падает задача, а не планировщик: так было бы с `matplotlib`, который стоял только в dev-зависимостях. Модели в образе нет: под сервиса при старте загружает `amr_prediction@champion` из MLflow. Поэтому выкат - это перестановка алиаса гейтом и перезапуск подов; в сценарии выше образ деплоймента `sha-eb624f8` не менялся, а версия в подах сменилась с v1 на v6 за 25 с после `rollout`.
 
 **6. Слои дашборда и почему в метках нет `request_id`.** Инфраструктуру на дашборде представляет одна панель - рестарты контейнеров (`kube_pod_container_status_restarts_total` из kube-state-metrics). CPU и память подов можно увидеть через `kubectl top pods`, по ним же масштабирует HPA. Слой сервиса - запросы в секунду по ручке и коду ответа, запросы за 5 минут, задержка p50 и p95: их даёт instrumentator, и для любого HTTP-API они выглядели бы так же. Слой модели - версия в подах, доля предсказаний по классам и распределение уверенности. Только по этим панелям видно, что поменялась сама модель или её ответы: сервис может отвечать 200 на каждый запрос и при этом предсказывать не то.
 
