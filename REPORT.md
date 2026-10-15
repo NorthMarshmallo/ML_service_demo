@@ -23,7 +23,7 @@
 | Бакеты задержки по серверному времени | [инцидент 1](#1-задержка-на-дашборде-втрое-выше-чем-у-клиента) |
 | Данные DVC в S3 кластера, в образе только указатели | [данные в S3](#данные-в-s3-кластера) |
 | Проверка данных схемами pandera, тесты в CI | [проверка данных](#проверка-данных), [зелёный tests](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/38598402121/job/115970980320?pr=41) |
-| DAG переобучения: validate, train, promoted, rollout; DAG и образ выставляет CI | [деплой](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/38725755522), [новая версия лучше](#переобучение-новая-версия-лучше) |
+| DAG переобучения: validate, train, promoted, rollout; DAG и образ выставляет CI | [деплой](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/38725755522), [новая версия лучше](#переобучение-новая-версия-лучше), [новая версия хуже](#переобучение-новая-версия-хуже) |
 
 #### Деплой с мониторингом
 
@@ -175,6 +175,33 @@ Airflow (под airflow, mlops) ── POST pod ──► под amr-validate (�
 Прогон train в MLflow: Source - `train.py` и коммит `eb624f8` из тега образа, версия 6 в реестре. Duration 1.6 с - прогон открывается после обучения, только для записи метрик и модели.
 
 ![train-run-commit](docs/screenshots/train-run-commit.png)
+
+#### Переобучение: новая версия хуже
+
+Trigger DAG с `hidden_dim` 32, champion - версия 6 (macro F1 0.9533). Запуск `manual__2026-10-15T15:03:21`.
+
+| Задача | Время (МСК) | Длительность |
+|---|---|---|
+| validate | 18:03:23-18:03:35 | 12 с |
+| train | 18:03:37-18:03:52 | 15 с |
+| promoted | 18:03:53 | < 1 с: версия 7, macro F1 0.876 против 0.9533 у версии 6 → `False` |
+| rollout | 18:03:53 | skipped |
+
+![dag-skipped](docs/screenshots/dag-skipped.png)
+
+Гейт в `train.py` отдал версии 7 только алиас `challenger`, `champion` остался на версии 6:
+
+![registry-challenger](docs/screenshots/registry-challenger.png)
+
+![models-f1](docs/screenshots/models-f1.png)
+
+Поды сервиса до и после запуска одни и те же, `/health` - `amr_prediction-v6`:
+
+```
+NAME                                      READY   STATUS    RESTARTS      AGE
+amr-prediction-service-5cbbc96c68-w2x7z   1/1     Running   1 (38m ago)   3h38m
+amr-prediction-service-5cbbc96c68-w8ngd   1/1     Running   0             37m
+```
 
 ### Добавлено
 
