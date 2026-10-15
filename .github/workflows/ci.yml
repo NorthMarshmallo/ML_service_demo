@@ -77,6 +77,8 @@ jobs:
         run: |
           docker pull "$IMAGE"
           kind load docker-image "$IMAGE" --name "$KIND_CLUSTER"
+          # хостовая копия после kind load не нужна, старые версии копятся на диске раннера
+          docker images --format '{{.Repository}}:{{.Tag}}' "${IMAGE%:*}" | grep -vx "$IMAGE" | xargs -r docker rmi || true
       - name: подтягиваем секреты
         env:
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
