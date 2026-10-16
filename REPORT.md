@@ -2,29 +2,60 @@
 
 Трекинг изменений проекта. Формат: [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии: [SemVer](https://semver.org/lang/ru/).
 
-## [Unreleased] - платформа одной командой, мониторинг сервиса, данные в S3 кластера, проверка данных, переобучение в Airflow
+## [0.4.0] - 2026-10-16 - платформа одной командой, мониторинг, данные в S3 кластера, проверка данных, переобучение в Airflow
 
-Платформа поднимается одним скриптом [`platform/up.sh`](platform/up.sh): кластер kind, Traefik, MLflow, Airflow, S3 на RustFS, Prometheus и Grafana, metrics-server. Сервис отдаёт метрики запросов и модели, Prometheus забирает их с каждого пода, Grafana показывает дашборд:
+Платформа поднимается одним скриптом [`platform/up.sh`](platform/up.sh): кластер kind, Traefik, MLflow, Airflow, S3 на RustFS, Prometheus и Grafana, metrics-server. Сервис отдаёт метрики запросов и модели, данные лежат в S3 кластера под DVC, перед обучением проверяются схемами pandera, переобучение с гейтом и выкатом идёт по расписанию в Airflow.
+
+Ветки: компоненты платформы - [PR #35](https://github.com/NorthMarshmallo/ML_service_demo/pull/35), `up.sh` - [PR #36](https://github.com/NorthMarshmallo/ML_service_demo/pull/36), метрики и дашборд - [PR #37](https://github.com/NorthMarshmallo/ML_service_demo/pull/37), бакеты задержки - [PR #38](https://github.com/NorthMarshmallo/ML_service_demo/pull/38), данные в S3 кластера - [PR #40](https://github.com/NorthMarshmallo/ML_service_demo/pull/40), проверка данных - [PR #41](https://github.com/NorthMarshmallo/ML_service_demo/pull/41), переобучение в Airflow - [PR #42](https://github.com/NorthMarshmallo/ML_service_demo/pull/42), очистка образов в CI и ключ Airflow - [PR #43](https://github.com/NorthMarshmallo/ML_service_demo/pull/43), испорченная выгрузка и откат - [PR #44](https://github.com/NorthMarshmallo/ML_service_demo/pull/44), [PR #45](https://github.com/NorthMarshmallo/ML_service_demo/pull/45), Quickstart - [PR #47](https://github.com/NorthMarshmallo/ML_service_demo/pull/47).
+
+Разделение ответственности: `up.sh` ставит то, что не зависит от сервиса и меняется редко (платформа, один раз на кластер); CI выкатывает всё, что относится к сервису, на каждый деплой (`k8s/`, `k8s/monitoring/`, DAG).
+
+### Архитектура
 
 ```
-поды api :8000/metrics ◄── Prometheus (ServiceMonitor, раз в 15 с) ◄── Grafana (дашборд из ConfigMap)
+ноутбук ── git push ──► GitHub ── Actions: tests, build ──► ghcr.io: образ sha-<коммит>
+        │                        └ Run workflow: deploy ──► runner gh-runner (Docker хоста, сеть kind)
+        │                                                     docker pull, kind load, kubectl apply, smoke
+        └ dvc push, curl, браузер
+              │
+127.0.0.1:80 ─► kind mlops :30080 ─► Traefik ─┬─ amr.localhost ───► Service amr-prediction-service ─► поды api x2 :8000 ─► postgres :5432
+                                              │                                                       ▲ при старте models:/amr_prediction@champion
+                                              ├─ mlflow.localhost ─► MLflow :5000 ─────────────────────┘
+                                              ├─ airflow.localhost ► Airflow :8080 ─► поды amr-validate, amr-train (образ сервиса)
+                                              │                          │              dvc pull ─► RustFS; прогоны и версии ─► MLflow
+                                              │                          └ rollout: PATCH deploy/amr-prediction-service
+                                              ├─ s3.localhost ─────► RustFS :9000, бакет dvc
+                                              └─ grafana.localhost ► Grafana ◄── Prometheus ◄── /metrics подов api, раз в 15 с
 ```
 
-Ветки: компоненты платформы - [PR #35](https://github.com/NorthMarshmallo/ML_service_demo/pull/35), `up.sh` - [PR #36](https://github.com/NorthMarshmallo/ML_service_demo/pull/36), метрики и дашборд - [PR #37](https://github.com/NorthMarshmallo/ML_service_demo/pull/37), бакеты задержки - [PR #38](https://github.com/NorthMarshmallo/ML_service_demo/pull/38), данные в S3 кластера - [PR #40](https://github.com/NorthMarshmallo/ML_service_demo/pull/40), проверка данных - [PR #41](https://github.com/NorthMarshmallo/ML_service_demo/pull/41), переобучение в Airflow - [PR #42](https://github.com/NorthMarshmallo/ML_service_demo/pull/42).
+Namespace: сервис и Postgres - `default`; MLflow, Airflow, RustFS - `mlops`; Prometheus и Grafana - `monitoring`; Traefik - `traefik`. Изнутри кластера сервисы ходят по DNS Service: `mlflow.mlops:5000`, `rustfs.mlops:9000`, `postgres:5432`.
 
-Разделение ответственности: `up.sh` ставит то, что не зависит от сервиса и меняется редко (платформа, один раз на кластер); CI выкатывает всё, что относится к сервису, на каждый деплой (`k8s/`, `k8s/monitoring/`).
+### Где что хранится
+
+| Что | Где | Как найти нужную версию |
+|---|---|---|
+| Код | GitHub, `main`; каждое изменение - PR | коммит; у образа тег `sha-<коммит>`, у прогона обучения тег `mlflow.source.git.commit` |
+| Данные | бакет `dvc` в RustFS (PVC `rustfs-data`); в git - указатель `datasets/dataset.csv.dvc`; исходная выгрузка v2 - релиз [`data-v2`](https://github.com/NorthMarshmallo/ML_service_demo/releases/tag/data-v2) | md5 в `.dvc`-файле коммита: `git checkout <коммит> -- datasets/dataset.csv.dvc && uv run dvc pull`; у прогонов `train` и `validate` параметр `data_md5` |
+| Модель | MLflow: реестр и прогоны в SQLite, артефакты в `/mlflow/artifacts`, PVC `mlflow-data` | реестр `amr_prediction`: номер версии, алиасы `champion` и `challenger`; от версии Source run → коммит и `data_md5` |
+| Образ | ghcr.io `northmarshmallo/amr-prediction-service`; копия в containerd узла kind | тег `sha-<коммит>`; работающий - `kubectl get deploy amr-prediction-service -o jsonpath='{..image}'` |
+| Логи запросов | таблица `predictions` в Postgres, под `postgres` в `default`, данные в слое контейнера | по `request_id` из ответа: `SELECT * FROM predictions WHERE request_id = '...'`, в строке `model_version`. При пересоздании пода таблица начинается заново; сервис знает только `DATABASE_URL` из Secret, внешняя база подключается заменой Secret |
+
+Метрики - в Prometheus, хранение 2 дня; запуски DAG и логи задач - в Airflow, SQLite на PVC `airflow-data`.
 
 ### Приёмка
 
 | Изменение | Подтверждение |
 |---|---|
+| Проект поднимается с нуля по Quickstart: от `git clone` до ответа через Ingress за 17 минут | [Quickstart](README.md#quickstart), [подъём с нуля](#подъём-с-нуля-по-quickstart) |
+| Деплой через runner: секреты, база, сервис, мониторинг и DAG, smoke | [зелёный прогон](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/38769319100), [деплой с мониторингом](#деплой-с-мониторингом) |
 | Метрики сервиса и модели, дашборд | [дашборд под трафиком](#дашборд-под-трафиком) |
-| Деплой с мониторингом, smoke по метрике версии модели | [зелёный прогон](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/38561348804), [деплой](#деплой-с-мониторингом) |
 | Бакеты задержки по серверному времени | [инцидент 1](#1-задержка-на-дашборде-втрое-выше-чем-у-клиента) |
 | Данные DVC в S3 кластера, в образе только указатели | [данные в S3](#данные-в-s3-кластера) |
-| Quickstart: от `git clone` до ответа через Ingress за 17 минут | [подъём с нуля](#подъём-с-нуля-по-quickstart), [деплой](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/38769319100) |
 | Проверка данных схемами pandera, тесты в CI | [проверка данных](#проверка-данных), [зелёный tests](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/38598402121/job/115970980320?pr=41) |
-| DAG переобучения: validate, train, promoted, rollout; DAG и образ выставляет CI | [деплой](https://github.com/NorthMarshmallo/ML_service_demo/actions/runs/38725755522), [новая версия лучше](#переобучение-новая-версия-лучше), [новая версия хуже](#переобучение-новая-версия-хуже), [испорченная выгрузка и откат](#переобучение-испорченная-выгрузка) |
+| Переобучение в Airflow: лучшая версия выкатывается без пересборки образа | [новая версия лучше](#переобучение-новая-версия-лучше) |
+| Гейт не пускает версию хуже, поды не перезапускаются | [новая версия хуже](#переобучение-новая-версия-хуже) |
+| Испорченная выгрузка останавливает конвейер на validate, откат через `git revert` | [испорченная выгрузка](#переобучение-испорченная-выгрузка) |
+| HPA по CPU и нагрузка locust через Ingress | [доработки 0.3.0](#доработки-030) |
 
 #### Деплой с мониторингом
 
@@ -273,6 +304,10 @@ traefik              traefik-6d9c545874-kkm9d                              1/1  
 ```
 
 Данные в свежем клоне берутся из релиза [`data-v2`](https://github.com/NorthMarshmallo/ML_service_demo/releases/tag/data-v2): в git и в образе их нет, релиз играет роль источника выгрузки. md5 файла из релиза совпадает с `datasets/dataset.csv.dvc`, поэтому `dvc add` указатель не меняет, а `dvc push` кладёт ту же версию в бакет нового кластера.
+
+### Доработки 0.3.0
+
+HPA и часть ответов версии 0.3.0 попали в `main` после её закрытия: [PR #33](https://github.com/NorthMarshmallo/ML_service_demo/pull/33), 05.10 в 00:39. Коммиты: [`0e89ef3`](https://github.com/NorthMarshmallo/ML_service_demo/commit/0e89ef3) - HPA по CPU и metrics-server, [`354769d`](https://github.com/NorthMarshmallo/ML_service_demo/commit/354769d) - requests памяти по замерам, [`d9d9fe6`](https://github.com/NorthMarshmallo/ML_service_demo/commit/d9d9fe6) - нагрузка locust через Ingress, [`988dd5b`](https://github.com/NorthMarshmallo/ML_service_demo/commit/988dd5b) - прогоны нагрузки и ответы 1, 2, 3, 5, 7, 8. Прогоны - [автомасштабирование HPA](#автомасштабирование-hpa), ответы - [вопросы и решения 0.3.0](#вопросы-и-решения-1).
 
 ### Добавлено
 
@@ -880,7 +915,7 @@ build запустится параллельно с tests и не будет ж
 - **Причина:** в `requests` запрошено больше памяти, чем есть на ноде.
 - **Исправление:** `1000Mi` в `requests` и `limits`, `kubectl apply -f k8s/`. Оба пода перешли в `Running`.
 
-[Unreleased]: https://github.com/NorthMarshmallo/ML_service_demo/compare/v0.3.0...HEAD
+[0.4.0]: https://github.com/NorthMarshmallo/ML_service_demo/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/NorthMarshmallo/ML_service_demo/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/NorthMarshmallo/ML_service_demo/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/NorthMarshmallo/ML_service_demo/releases/tag/v0.1.0
