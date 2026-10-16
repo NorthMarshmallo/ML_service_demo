@@ -74,16 +74,16 @@ curl -X POST http://amr.localhost/v1/predict -H "Content-Type: application/json"
 ```
 
 ```json
-{"score": 0.998, "antibiotic_class": "aminoglycoside", "model_version": "amr_prediction-v4", "request_id": "7948713f-ad45-4961-a94e-1cd49c08c5c7", "latency_ms": 3.26}
+{"score": 0.999, "antibiotic_class": "aminoglycoside", "model_version": "amr_prediction-v1", "request_id": "d9847688-d169-44b1-8166-b0f104659f0e", "latency_ms": 1.48}
 ```
 
 `score` - вероятность предсказанного класса. Вход: только 20 стандартных аминокислот, длина от 20 символов, иначе ответ 422.
 
-`/health` в кластере: `"model_version": "amr_prediction-v4", "model_source": "models:/amr_prediction@champion"`; без `MODEL_NAME` - версия бандла и путь к файлу.
+`/health` в кластере: `"model_version": "amr_prediction-vN", "model_source": "models:/amr_prediction@champion"`, N - версия с алиасом `champion`; без `MODEL_NAME` - версия бандла и путь к файлу.
 
 ## Модель
 
-Классы: `aminoglycoside`, `bacitracin`, `beta_lactam`, `chloramphenicol`, `macrolide-lincosamide-streptogramin`, `multidrug`, `polymyxin`. Это фиксированный список `CLASSES` в [`train.py`](src/amr_prediction/train.py): 7 самых частых классов исходного датасета (90% записей) выбраны один раз при исследовании и не пересчитываются при новом обучении. Добавить класс - осознанное изменение списка и новая версия модели.
+Классы: `aminoglycoside`, `bacitracin`, `beta_lactam`, `chloramphenicol`, `macrolide-lincosamide-streptogramin`, `multidrug`, `polymyxin`. Это фиксированный список `CLASSES` в [`data.py`](src/amr_prediction/data.py): 7 самых частых классов исходного датасета (90% записей) выбраны один раз при исследовании и не пересчитываются при новом обучении. Добавить класс - осознанное изменение списка и новая версия модели.
 
 Пайплайн: `TfidfVectorizer(analyzer='char')` + `MLPClassifier`. Исследование: [experiments/notebooks/amr-prediction.ipynb](experiments/notebooks/amr-prediction.ipynb), обучение с регистрацией в MLflow: [src/amr_prediction/train.py](src/amr_prediction/train.py).
 
