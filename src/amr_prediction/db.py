@@ -25,7 +25,8 @@ def init() -> None:
     if not settings.database_url:
         return
     # 6 реплик по HPA * 5 = 30 соединений, у Postgres max_connections = 100
-    pool = ConnectionPool(settings.database_url, min_size=1, max_size=5, open=True)
+    # check: перед выдачей соединение проверяется, иначе после перезапуска Postgres запись падает на мёртвом соединении
+    pool = ConnectionPool(settings.database_url, min_size=1, max_size=5, open=True, check=ConnectionPool.check_connection)
     with pool.connection() as conn:
         conn.execute("SELECT pg_advisory_xact_lock(7001)")
         conn.execute(DDL)
