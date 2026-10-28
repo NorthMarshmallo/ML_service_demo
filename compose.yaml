@@ -9,7 +9,7 @@ services:
         condition: service_healthy
   
   db:
-    image: postgres:16
+    image: postgres:16.15
     environment:
      POSTGRES_PASSWORD: postgres
      POSTGRES_DB: amr_prediction
