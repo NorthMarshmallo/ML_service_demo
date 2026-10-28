@@ -14,6 +14,7 @@ from starlette.background import BackgroundTask
 from amr_prediction import db
 from amr_prediction.config import settings
 from amr_prediction.model_store import load_model
+from amr_prediction.sequence import MAX_LENGTH, MIN_LENGTH, STANDARD_AA
 
 PREDICTIONS = Counter("amr_predictions_total", "Predictions by class", ["antibiotic_class"])
 SCORE = Histogram("amr_score", "Probability of predicted class", buckets=[i / 10 for i in range(11)])
@@ -25,8 +26,8 @@ LATENCY_BUCKETS = (0.005, 0.01, 0.015, 0.02, 0.025, 0.03, 0.035, 0.04, 0.05, 0.0
 class Features(BaseModel):
     model_config = {"extra": "forbid"}
 
-    # только 20 стандартных аминокислот и длина >= 20
-    sequence: str = Field(pattern=r"^[ACDEFGHIKLMNPQRSTVWY]+$", min_length=20)
+    # те же правила, что у данных обучения: только 20 стандартных аминокислот, длина 20-2000
+    sequence: str = Field(pattern=f"^[{STANDARD_AA}]+$", min_length=MIN_LENGTH, max_length=MAX_LENGTH)
 
 
 class Prediction(BaseModel):
