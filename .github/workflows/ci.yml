@@ -94,8 +94,9 @@ jobs:
           kubectl rollout status deploy/postgres --timeout=180s
       - name: сервис
         run: |
+          # образ этого деплоя сразу в манифест: одна раскатка, без промежуточных подов с образом-заглушкой из файла
+          sed -i "s|image: amr_prediction-service:1.0|image: $IMAGE|" k8s/deployment.yaml
           kubectl apply -f k8s/
-          kubectl set image deploy/amr-prediction-service api="$IMAGE"
           kubectl rollout status deploy/amr-prediction-service --timeout=180s
       - name: мониторинг и DAG
         run: |
