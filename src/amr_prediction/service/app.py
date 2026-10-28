@@ -18,7 +18,7 @@ from amr_prediction.model_store import load_model
 PREDICTIONS = Counter("amr_predictions_total", "Predictions by class", ["antibiotic_class"])
 SCORE = Histogram("amr_score", "Probability of predicted class", buckets=[i / 10 for i in range(11)])
 MODEL_INFO = Gauge("amr_model_info", "Model loaded by this pod", ["version"])
-# p50 ≈ 25 мс, p95 ≈ 45 мс по Prometheus: в серверное время входит запись в Postgres после ответа
+# p50 ≈ 8 мс, p95 ≈ 14 мс по Prometheus: в серверное время входит запись в Postgres после ответа
 LATENCY_BUCKETS = (0.005, 0.01, 0.015, 0.02, 0.025, 0.03, 0.035, 0.04, 0.05, 0.075, 0.1, 0.25, 0.5, 1)
 
 
@@ -46,6 +46,7 @@ async def lifespan(app: FastAPI):
 
     db.init()
     yield
+    db.close()
     app.state.pipeline = None
 
 
