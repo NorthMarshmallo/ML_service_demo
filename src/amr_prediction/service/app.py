@@ -14,19 +14,20 @@ from starlette.background import BackgroundTask
 from amr_prediction import db
 from amr_prediction.config import settings
 from amr_prediction.model_store import load_model
+from amr_prediction.sequence import MAX_LENGTH, MIN_LENGTH, STANDARD_AA
 
 PREDICTIONS = Counter("amr_predictions_total", "Predictions by class", ["antibiotic_class"])
 SCORE = Histogram("amr_score", "Probability of predicted class", buckets=[i / 10 for i in range(11)])
 MODEL_INFO = Gauge("amr_model_info", "Model loaded by this pod", ["version"])
-# p50 ≈ 25 мс, p95 ≈ 45 мс по Prometheus: в серверное время входит запись в Postgres после ответа
+# p50 ≈ 8 мс, p95 ≈ 14 мс по Prometheus: в серверное время входит запись в Postgres после ответа
 LATENCY_BUCKETS = (0.005, 0.01, 0.015, 0.02, 0.025, 0.03, 0.035, 0.04, 0.05, 0.075, 0.1, 0.25, 0.5, 1)
 
 
 class Features(BaseModel):
     model_config = {"extra": "forbid"}
 
-    # только 20 стандартных аминокислот и длина >= 20
-    sequence: str = Field(pattern=r"^[ACDEFGHIKLMNPQRSTVWY]+$", min_length=20)
+    # те же правила, что у данных обучения: только 20 стандартных аминокислот, длина 20-2000
+    sequence: str = Field(pattern=f"^[{STANDARD_AA}]+$", min_length=MIN_LENGTH, max_length=MAX_LENGTH)
 
 
 class Prediction(BaseModel):
@@ -46,6 +47,7 @@ async def lifespan(app: FastAPI):
 
     db.init()
     yield
+    db.close()
     app.state.pipeline = None
 
 

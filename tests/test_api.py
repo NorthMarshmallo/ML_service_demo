@@ -12,7 +12,7 @@ def test_ready(client):
     assert client.get("/ready").status_code == 200
 
 
-@pytest.mark.parametrize("sequence", ["", "hello", "ACDEF", "ACDEFGHIKLMNPQRSTVWYX"])
+@pytest.mark.parametrize("sequence", ["", "hello", "ACDEF", "ACDEFGHIKLMNPQRSTVWYX", "A" * 2001])
 def test_bad_sequence_is_422(client, sequence):
     r = client.post("/v1/predict", json={"sequence": sequence})
     assert r.status_code == 422

@@ -14,6 +14,8 @@ import mlflow
 import pandas as pd
 import pandera.pandas as pa
 
+from amr_prediction.sequence import MAX_LENGTH, MIN_LENGTH, STANDARD_AA
+
 DATA_PATH = Path(os.getenv("DATA_PATH", "datasets/dataset.csv"))
 EXPERIMENT = os.getenv("MLFLOW_VALIDATE_EXPERIMENT", "amr_prediction_data")
 
@@ -22,9 +24,6 @@ TARGET = "antibiotic_class"
 # классы, которые предсказывает модель: 7 самых частых в исходном датасете (90% записей)
 CLASSES = ["aminoglycoside", "bacitracin", "beta_lactam", "chloramphenicol",
            "macrolide-lincosamide-streptogramin", "multidrug", "polymyxin"]
-MIN_LENGTH = 20
-MAX_LENGTH = 2000
-STANDARD_AA = "RHKDESTNQCGPAILMFWYV"
 
 # средний состав аминокислот очищенного слоя v2 (fbb751c6...), зафиксирован: эталон не должен
 # сдвигаться вместе с испорченной выгрузкой

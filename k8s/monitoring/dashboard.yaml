@@ -70,6 +70,29 @@ data:
           "datasource": {"type": "prometheus", "uid": "prometheus"},
           "options": {"orientation": "vertical", "displayMode": "basic", "reduceOptions": {"calcs": ["lastNotNull"]}},
           "targets": [{"refId": "A", "expr": "sum by (le) (increase(amr_score_bucket[15m]))", "format": "heatmap", "legendFormat": "{{le}}"}]
+        },
+        {
+          "id": 8, "type": "timeseries", "title": "CPU подов сервиса, доля от requests",
+          "gridPos": {"x": 0, "y": 21, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0,
+            "custom": {"thresholdsStyle": {"mode": "line"}},
+            "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 0.6}]}}},
+          "targets": [
+            {"refId": "A", "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"default\", container=\"api\"}[1m])) / sum by (pod) (kube_pod_container_resource_requests{namespace=\"default\", container=\"api\", resource=\"cpu\"})", "legendFormat": "{{pod}}"},
+            {"refId": "B", "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"default\", container=\"api\"}[1m])) / sum(kube_pod_container_resource_requests{namespace=\"default\", container=\"api\", resource=\"cpu\"})", "legendFormat": "среднее, по нему HPA, цель 60%"}
+          ]
+        },
+        {
+          "id": 9, "type": "timeseries", "title": "Память подов сервиса",
+          "gridPos": {"x": 12, "y": 21, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {"defaults": {"unit": "bytes", "min": 0}},
+          "targets": [
+            {"refId": "A", "expr": "sum by (pod) (container_memory_working_set_bytes{namespace=\"default\", container=\"api\"})", "legendFormat": "{{pod}}"},
+            {"refId": "B", "expr": "max(kube_pod_container_resource_requests{namespace=\"default\", container=\"api\", resource=\"memory\"})", "legendFormat": "requests"},
+            {"refId": "C", "expr": "max(kube_pod_container_resource_limits{namespace=\"default\", container=\"api\", resource=\"memory\"})", "legendFormat": "limits"}
+          ]
         }
       ]
     }

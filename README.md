@@ -2,7 +2,11 @@
 
 ![ci](https://github.com/NorthMarshmallo/ML_service_demo/actions/workflows/ci.yml/badge.svg)
 
-Сервис предсказывает класс антибиотиков, к которому белок даёт устойчивость (AMR), по его аминокислотной последовательности. FastAPI + scikit-learn: TF-IDF по символам последовательности и `MLPClassifier`, 7 классов, macro F1 0.953 на отложенной выборке. Каждое предсказание с `request_id` логируется в PostgreSQL.
+**Предпосылки.** Чтобы изучить бактерию, секвенируют её геном и по нему получают последовательности белков, которые она вырабатывает. Часть этих белков обеспечивает устойчивость к антибиотикам (antimicrobial resistance, AMR): расщепляет молекулу антибиотика (например, бета-лактамазы разрушают пенициллины), изменяет её или выводит из клетки. Выявление класса антибиотиков, к которому белок может давать устойчивость, способствует повышению качества лечения.
+
+**Цель.** Сервис по аминокислотной последовательности белка определяет класс антибиотиков, к которому белок может давать устойчивость, и вероятность этого класса. Модель обучена на белках с известной устойчивостью из курируемой базы. База пополняется по мере описания новых белков: каждая новая версия выгружается в CSV и кладётся в S3 под DVC, а Airflow по расписанию проверяет её и переобучает модель.
+
+FastAPI + scikit-learn: TF-IDF по символам последовательности и `MLPClassifier`, 7 классов, macro F1 0.953 на отложенной выборке. Каждое предсказание с `request_id` логируется в PostgreSQL.
 
 Модель обучается скриптом [`train.py`](src/amr_prediction/train.py) и регистрируется в MLflow; в сервис попадает только версия, прошедшая гейт по macro F1 (алиас `champion`). Сервис при старте загружает `champion` из реестра, поэтому смена модели - это перестановка алиаса и перезапуск подов, без пересборки образа. Всё работает в локальном кластере kind: Traefik на порту 80, MLflow, Airflow, S3 (RustFS), Prometheus и Grafana поднимаются одной командой, деплой сервиса - GitHub Actions на self-hosted runner.
 
@@ -30,7 +34,7 @@ MLFLOW_TRACKING_URI=http://mlflow.localhost uv run python -m amr_prediction.trai
 # 4. runner для деплоя: токен - в форке Settings → Actions → Runners → New self-hosted runner, действует час
 export RUNNER_TOKEN=<токен>
 docker run -d --name gh-runner --network kind --restart unless-stopped \
-  --group-add "$(stat -c %g /var/run/docker.sock)" \
+  --group-add "$(stat -c %g /var/run/docker.sock 2>/dev/null || echo 0)" \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -e REPO_URL=https://github.com/<владелец>/ML_service_demo -e RUNNER_TOKEN \
   ghcr.io/actions/actions-runner:2.337.0 \
@@ -47,7 +51,7 @@ curl -X POST http://amr.localhost/v1/predict -H "Content-Type: application/json"
 kubectl get pods -A
 ```
 
-Если Python не находит `*.localhost` (`getaddrinfo failed` на шаге 2 или 3), в hosts нужна строка `127.0.0.1 mlflow.localhost s3.localhost amr.localhost`. На Docker Desktop в шаге 4 вместо `$(stat ...)` - `0`.
+Если Python не находит `*.localhost` (`getaddrinfo failed` на шаге 2 или 3), в hosts нужна строка `127.0.0.1 mlflow.localhost s3.localhost amr.localhost`.
 
 ## Интерфейсы
 
@@ -77,7 +81,7 @@ curl -X POST http://amr.localhost/v1/predict -H "Content-Type: application/json"
 {"score": 0.999, "antibiotic_class": "aminoglycoside", "model_version": "amr_prediction-v1", "request_id": "d9847688-d169-44b1-8166-b0f104659f0e", "latency_ms": 1.48}
 ```
 
-`score` - вероятность предсказанного класса. Вход: только 20 стандартных аминокислот, длина от 20 символов, иначе ответ 422.
+`score` - вероятность предсказанного класса. Вход: только 20 стандартных аминокислот, длина от 20 до 2000 символов, как у данных обучения, иначе ответ 422.
 
 `/health` в кластере: `"model_version": "amr_prediction-vN", "model_source": "models:/amr_prediction@champion"`, N - версия с алиасом `champion`; без `MODEL_NAME` - версия бандла и путь к файлу.
 
@@ -115,7 +119,7 @@ Namespace: сервис и Postgres - `default`; MLflow, Airflow, RustFS - `mlop
 | Метрика | Тип | Что показывает |
 |---|---|---|
 | `http_requests_total` | counter | запросы по ручке и коду ответа (`prometheus-fastapi-instrumentator`) |
-| `http_request_duration_seconds` | histogram | задержка внутри сервиса; бакеты через 5 мс от 5 до 50 мс (p50 ≈ 25 мс, p95 ≈ 40 мс), дальше до 1 с |
+| `http_request_duration_seconds` | histogram | задержка внутри сервиса; бакеты через 5 мс от 5 до 50 мс (p50 ≈ 8 мс, p95 ≈ 14 мс), дальше до 1 с |
 | `amr_model_info{version}` | gauge | версия модели, загруженная подом |
 | `amr_predictions_total{antibiotic_class}` | counter | предсказания по классам |
 | `amr_score` | histogram | уверенность модели: вероятность предсказанного класса |
@@ -226,7 +230,7 @@ Job `deploy` выполняется на self-hosted runner в Docker-сети `
 ```bash
 export RUNNER_TOKEN=<токен со страницы New self-hosted runner, действует час>
 docker run -d --name gh-runner --network kind --restart unless-stopped \
-  --group-add "$(stat -c %g /var/run/docker.sock)" \
+  --group-add "$(stat -c %g /var/run/docker.sock 2>/dev/null || echo 0)" \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -e REPO_URL=https://github.com/<владелец>/<репозиторий> -e RUNNER_TOKEN \
   ghcr.io/actions/actions-runner:2.337.0 \

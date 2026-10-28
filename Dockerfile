@@ -1,7 +1,7 @@
-FROM python:3.11-slim
+FROM python:3.11.18-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 UV_COMPILE_BYTECODE=1
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.6 /uv /bin/uv
 
 WORKDIR /app
 

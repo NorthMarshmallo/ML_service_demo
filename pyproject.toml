@@ -12,7 +12,7 @@ dependencies = [
     "pandas",
     "scikit-learn>=1.6,<1.7",
     "joblib",
-    "psycopg[binary]",
+    "psycopg[binary,pool]",
     "mlflow-skinny>=3.16,<4",
     "skops>=0.16",
     "prometheus-client>=0.21",
