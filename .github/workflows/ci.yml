@@ -95,7 +95,9 @@ jobs:
       - name: сервис
         run: |
           # образ этого деплоя сразу в манифест: одна раскатка, без промежуточных подов с образом-заглушкой из файла
-          sed -i "s|image: amr_prediction-service:1.0|image: $IMAGE|" k8s/deployment.yaml
+          # строка image в манифесте одна; заменяется по ключу, значение в файле может быть любым
+          sed -i "s|image: .*|image: $IMAGE|" k8s/deployment.yaml
+          grep -q "image: $IMAGE" k8s/deployment.yaml
           kubectl apply -f k8s/
           kubectl rollout status deploy/amr-prediction-service --timeout=180s
       - name: мониторинг и DAG

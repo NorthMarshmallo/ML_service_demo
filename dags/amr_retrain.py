@@ -47,6 +47,9 @@ def amr_retrain():
 
     @task.short_circuit
     def promoted(result: dict) -> bool:
+        if "skipped" in result:
+            print(f"коммит и данные уже обучались в прогоне {result['skipped']}, обучение пропущено")
+            return False
         print(f"версия {result['version']}, macro F1 {result['macro_f1']}, "
               f"champion до этого {result['champion_before']} с macro F1 {result['champion_f1_before']}")
         return result["promoted"]

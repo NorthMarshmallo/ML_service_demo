@@ -4,6 +4,7 @@
 
 Новая версия всегда получает алиас challenger. Алиас champion она получает, только если
 macro F1 на отложенной выборке лучше, чем у текущего champion (или champion ещё нет).
+В DAG обучение пропускается, если тот же коммит уже обучался на тех же данных с тем же hidden_dim.
 """
 import hashlib
 import json
@@ -88,7 +89,30 @@ def promote(client: MlflowClient, version: str, f1: float) -> tuple[str | None, 
     return old_version, old_f1, promoted
 
 
+def trained_before(data_md5: str) -> str | None:
+    # только в DAG: тот же коммит на тех же данных с тем же hidden_dim уже обучался, повтор даст ту же модель
+    if not GIT_COMMIT:
+        return None
+    runs = mlflow.search_runs(
+        filter_string=f"params.data_md5 = '{data_md5}' and params.hidden_dim = '{HIDDEN_DIM}' "
+                      f"and tags.`mlflow.source.git.commit` = '{GIT_COMMIT}' and attributes.status = 'FINISHED'",
+        max_results=1)
+    return None if runs.empty else runs.loc[0, "run_id"]
+
+
+def emit(result: dict) -> dict:
+    print(json.dumps(result, ensure_ascii=False))
+    if XCOM_DIR.is_dir():
+        (XCOM_DIR / "return.json").write_text(json.dumps(result))
+    return result
+
+
 def main() -> dict:
+    data_md5 = hashlib.md5(DATA_PATH.read_bytes()).hexdigest()
+    mlflow.set_experiment(EXPERIMENT)
+    if run_id := trained_before(data_md5):
+        return emit({"skipped": run_id, "promoted": False})
+
     df, dropped = clean(DATA_PATH)
     x_train, x_test, y_train, y_test = train_test_split(
         df[FEATURES], df[TARGET], test_size=0.2, stratify=df[TARGET], random_state=SEED)
@@ -97,14 +121,13 @@ def main() -> dict:
     y_pred = pipeline.predict(x_test["sequence"])
     f1 = float(f1_score(y_test, y_pred, average="macro"))
 
-    mlflow.set_experiment(EXPERIMENT)
     with mlflow.start_run() as run:
         if GIT_COMMIT:
             mlflow.set_tag("mlflow.source.git.commit", GIT_COMMIT)
         metadata = {"features": FEATURES, "classes": list(pipeline.classes_), "n_train": len(x_train),
                     "data_rows": len(df), "sklearn": sklearn.__version__}
         mlflow.log_params({"hidden_dim": HIDDEN_DIM, "epochs": NUM_EPOCHS, "model": "MLPClassifier", "seed": SEED,
-                           "data": str(DATA_PATH), "data_md5": hashlib.md5(DATA_PATH.read_bytes()).hexdigest()})
+                           "data": str(DATA_PATH), "data_md5": data_md5})
         mlflow.log_metrics({"macro_f1": f1, "accuracy": float(accuracy_score(y_test, y_pred)), **dropped})
         mlflow.log_dict(metadata, "metadata.json")
         mlflow.log_figure(confusion_matrix_figure(y_test, y_pred), "confusion_matrix.png")
@@ -113,12 +136,8 @@ def main() -> dict:
         version = info.registered_model_version
 
     old_version, old_f1, promoted = promote(MlflowClient(), version, f1)
-    result = {"run_id": run.info.run_id, "version": version, "macro_f1": round(f1, 4),
-              "champion_before": old_version, "champion_f1_before": old_f1, "promoted": promoted}
-    print(json.dumps(result, ensure_ascii=False))
-    if XCOM_DIR.is_dir():
-        (XCOM_DIR / "return.json").write_text(json.dumps(result))
-    return result
+    return emit({"run_id": run.info.run_id, "version": version, "macro_f1": round(f1, 4),
+                 "champion_before": old_version, "champion_f1_before": old_f1, "promoted": promoted})
 
 
 if __name__ == "__main__":
